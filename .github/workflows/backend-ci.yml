@@ -1,0 +1,89 @@
+# Lint + pytest for PoulTech FastAPI backend (no SMTP, fakeredis, real Postgres).
+name: Backend CI
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ruff-and-pytest:
+    name: Ruff + Pytest (Python 3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: poultech
+          POSTGRES_PASSWORD: poultech
+          POSTGRES_DB: poultech_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U poultech -d poultech_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      APP_ENV: test
+      REDIS_FAKE: '1'
+      RATE_LIMIT_ENABLED: 'false'
+      EMAIL_BACKEND: console
+      DATABASE_URL: postgresql+asyncpg://poultech:poultech@localhost:5432/poultech_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      JWT_PRIVATE_KEY_PATH: keys/jwt_private.pem
+      JWT_PUBLIC_KEY_PATH: keys/jwt_public.pem
+      JWT_KEY_ID: ci-test-key
+      OTP_HMAC_SECRET: ci-test-only-otp-hmac-secret-32b!!
+      GOOGLE_CLIENT_ID: ci-test-google-client-id
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Generate JWT key pair (ephemeral, CI only)
+        run: |
+          mkdir -p keys
+          openssl genrsa -out keys/jwt_private.pem 2048
+          openssl rsa -in keys/jwt_private.pem -pubout -out keys/jwt_public.pem
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check app scripts
+
+      - name: Pytest
+        run: pytest --tb=short

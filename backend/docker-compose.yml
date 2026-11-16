@@ -1,0 +1,101 @@
+# Local stack. Secrets and mail live in `.env` — Compose only remaps
+# Docker-network hostnames via *_DOCKER keys (see `.env.example`).
+#
+#   docker compose up -d postgres redis mailpit
+#   docker compose --profile app up -d --build
+#
+# Host uvicorn: use DATABASE_URL / REDIS_* pointing at localhost ports.
+# Containers: env_file loads `.env`, then *_DOCKER overrides win for DB/Redis/JWT paths.
+name: poultech
+
+x-app-env: &app-env
+  DATABASE_URL: ${DATABASE_URL_DOCKER}
+  REDIS_URL: ${REDIS_URL_DOCKER}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL_DOCKER}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND_DOCKER}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-poultech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-poultech}
+      POSTGRES_DB: ${POSTGRES_DB:-poultech_dev}
+    ports: ['${POSTGRES_HOST_PORT:-5433}:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: OTP / rate-limit / short identity cache only.
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports: ['${REDIS_HOST_PORT:-6379}:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit
+    # Local catcher when SMTP_HOST=mailpit (containers) or localhost (host).
+    ports:
+      - '${MAILPIT_SMTP_HOST_PORT:-1025}:1025'
+      - '${MAILPIT_UI_HOST_PORT:-8025}:8025'
+
+  migrate:
+    build: .
+    command: ['alembic', 'upgrade', 'head']
+    env_file: [.env]
+    environment: *app-env
+    depends_on:
+      postgres: {condition: service_healthy}
+    profiles: ['app']
+
+  api:
+    build: .
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8000'
+      - --proxy-headers
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH_DOCKER}
+      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH_DOCKER}
+    volumes: ['./keys:/srv/poultech/keys:ro']
+    ports: ['${API_HOST_PORT:-8000}:8000']
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    profiles: ['app']
+
+  worker:
+    build: .
+    # Match local: listen on email (+ other) queues. OTP tasks route to `email`.
+    command:
+      - celery
+      - -A
+      - app.core.celery_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+      - -Q
+      - email,notifications,billing,reports,scheduled
+    env_file: [.env]
+    environment: *app-env
+    depends_on:
+      redis: {condition: service_healthy}
+    profiles: ['app']
+
+volumes:
+  pgdata:

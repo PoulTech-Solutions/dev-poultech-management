@@ -1,0 +1,56 @@
+[project]
+name = "poultech-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 110
+# Migrations are generated artefacts: they are reviewed by reading the SQL, not by
+# re-wrapping the emitter's line breaks.
+extend-exclude = ["alembic/versions"]
+target-version = "py312"
+src = ["app", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "S", "RET", "ARG", "PT", "RUF"]
+ignore = [
+  "B008",   # Depends() in argument defaults is the FastAPI idiom
+  "S101",   # assert in tests
+  "S105", "S106",   # the test/seed fixtures do carry literal passwords
+  "RET504",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/tests/*" = ["S105", "S106", "ARG001"]
+"scripts/*" = ["T201"]
+# Console backend prints; HTML email templates are long by nature.
+"app/tasks/email.py" = ["T201", "E501"]
+
+[tool.ruff.format]
+# The codebase is single-quoted already; the formatter must agree or every file
+# it touches becomes a diff.
+quote-style = "single"
+skip-magic-trailing-comma = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+warn_return_any = false
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+# Without asyncio_mode the async tests are collected, never run, and still
+# report green. That is the single most dangerous line in this file.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["app/tests"]
+addopts = "-q --strict-markers -p no:cacheprovider"
+filterwarnings = ["error::DeprecationWarning:app.*"]

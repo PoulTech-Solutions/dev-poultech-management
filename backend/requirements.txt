@@ -1,0 +1,25 @@
+# Runtime only. `pip install -r requirements-dev.txt` adds the tooling.
+# Pinned to the versions this batch was actually verified against.
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
+pydantic==2.14.2
+pydantic-settings==2.16.2
+email-validator==2.3.0
+
+SQLAlchemy==2.1.8
+asyncpg==0.32.0
+alembic==1.20.1
+greenlet==3.5.6
+
+argon2-cffi==25.1.0
+PyJWT==2.15.1
+cryptography==46.0.3
+
+redis==8.1.0
+celery==5.7.0
+structlog==26.1.0
+google-auth==2.62.1
+requests==2.32.5
+packaging==26.0
+phonenumbers==9.0.21
+httpx==0.28.1
