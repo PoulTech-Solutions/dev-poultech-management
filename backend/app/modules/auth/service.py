@@ -267,27 +267,32 @@ class AuthService:
     async def signup(self, payload: SignupRequest) -> Challenge:
         if await self._repo.email_taken(payload.email):
             raise ConflictError('Email is already registered', code='email_taken')
+        if await self._repo.phone_taken(payload.phone):
+            raise ConflictError('This mobile number is already in use', code='phone_taken')
         role = await self._repo.get_role_by_name(self._s.default_role_name)
         if role is None:
             log.critical('role_missing', role=self._s.default_role_name)
             raise AuthError(
                 'not_initialised', 'Server is not initialised: run scripts/seed_roles.py.', status=500
             )
+        # User + password only until email OTP is verified; profile rows are created in verify_signup.
         user = await self._repo.create_user(
             email=payload.email,
             password_hash=await hash_password_async(payload.password),
             role=role,
         )
-        await self._repo.upsert_profile(
-            user_id=user.id,
-            first_name=payload.first_name,
-            last_name=payload.last_name,
-            phone_e164=payload.phone,
-        )
         await self._db.commit()
         log.info('user_signup', user_id=str(user.id), role=role.name)
         return await self._issue_challenge(
-            user=user, email=payload.email, purpose='signup', display_name=payload.first_name
+            user=user,
+            email=payload.email,
+            purpose='signup',
+            display_name=payload.first_name,
+            extra={
+                'fn': payload.first_name,
+                'ln': payload.last_name,
+                'ph': payload.phone,
+            },
         )
 
     async def verify_signup(self, payload: OtpVerifyRequest) -> None:
@@ -295,8 +300,21 @@ class AuthService:
         user = await self._repo.get_by_id(uuid.UUID(state['u'])) if state.get('u') else None
         if user is None:
             raise AuthError('signup_expired', 'Start sign-up again.', status=410)
+        first_name = state.get('fn', '').strip()
+        last_name = state.get('ln', '').strip()
+        phone = state.get('ph', '').strip()
+        if not first_name or not last_name or not phone:
+            raise AuthError('signup_expired', 'Start sign-up again.', status=410)
+        if await self._repo.phone_taken(phone):
+            raise ConflictError('This mobile number is already in use', code='phone_taken')
         await self._consume(
             sid=payload.otp_session_id, purpose='signup', otp=payload.otp, identity=state.get('id', '')
+        )
+        await self._repo.upsert_profile(
+            user_id=user.id,
+            first_name=first_name,
+            last_name=last_name,
+            phone_e164=phone,
         )
         await self._repo.verify_email(user)
         await self._repo.mark_profile_complete(user.id)
@@ -311,15 +329,24 @@ class AuthService:
     async def login(self, payload: LoginRequest, request: Request) -> Challenge:
         user = await self._repo.get_by_email_any(payload.email)
         if user is None:
-            # Same answer as a wrong password, and the same work done.
             await verify_password_async(payload.password, None)
-            raise AuthError('invalid_credentials', 'Email or password is incorrect')
+            raise AuthError(
+                'registration_required',
+                'We could not find an account with this email. Check the address for typos, '
+                'or register with a valid email you can access.',
+            )
         if user.password_hash is None:
             await verify_password_async(payload.password, None)
-            raise AuthError('invalid_credentials', 'Email or password is incorrect')
+            raise AuthError(
+                'invalid_credentials',
+                'The email or password is incorrect. Check both and try again, or use Forgot password.',
+            )
         if not await verify_password_async(payload.password, user.password_hash):
             await self._register_failure(user, request)
-            raise AuthError('invalid_credentials', 'Email or password is incorrect')
+            raise AuthError(
+                'invalid_credentials',
+                'The email or password is incorrect. Check both and try again, or use Forgot password.',
+            )
         # Past a correct password it is safe - and needed - to name the state.
         if user.deleted_at is not None:
             raise AuthError(
@@ -328,7 +355,11 @@ class AuthService:
                 status=403,
             )
         if not user.is_active:
-            raise AuthError('invalid_credentials', 'Email or password is incorrect')
+            raise AuthError(
+                'email_not_verified',
+                'This email is registered but not verified. Open the signup message in your inbox, '
+                'or register again with a valid email you can access.',
+            )
         if user.locked_until and user.locked_until > datetime.now(UTC):
             wait = max(int((user.locked_until - datetime.now(UTC)).total_seconds()), 1)
             raise RateLimitError(
@@ -396,7 +427,7 @@ class AuthService:
 
     async def resend(self, payload: OtpResendRequest) -> Challenge:
         purpose = payload.purpose
-        if purpose in ('signup', 'restore'):
+        if purpose == 'restore':
             raise AuthError('resend_not_allowed', 'Start this step again to get a new code.')
         state = await self._challenge_state(sid=payload.otp_session_id, purpose=purpose)
         email = state.get('id', '')
@@ -625,7 +656,7 @@ class AuthService:
 
     # --------------------------------------------------------------- google
 
-    async def google(self, id_token: str, request: Request) -> Issued:
+    async def google(self, id_token: str, request: Request) -> tuple[Issued, dict[str, Any]]:
         if not self._s.google_client_id:
             raise AuthError('google_not_configured', 'Google sign-in is not configured.', status=503)
         try:
@@ -641,7 +672,7 @@ class AuthService:
             # Linking an address Google did not confirm would defeat OTP: refuse.
             raise AuthError('unverified_google_email', 'Google did not confirm this email', status=403)
 
-        user = await self._google_user(
+        user, is_new_user = await self._google_user(
             email=email,
             provider_user_id=str(claims['sub']),
             first_name=(str(claims.get('given_name') or 'Guest'))[:100],
@@ -651,11 +682,13 @@ class AuthService:
         await self._db.commit()
         # Google logins take the device slot without a second prompt: there is no
         # password step for the client to have confirmed a switch through.
-        return await self._open_session(user, request, purpose='google', confirm=True)
+        issued = await self._open_session(user, request, purpose='google', confirm=True)
+        return issued, {'is_new_user': is_new_user, 'auth_provider': 'google'}
 
     async def _google_user(
         self, *, email: str, provider_user_id: str, first_name: str, last_name: str, avatar_url: str | None
-    ) -> User:
+    ) -> tuple[User, bool]:
+        is_new_user = False
         account = await self._repo.find_google_account(provider_user_id)
         if account is not None:
             user = await self._repo.get_including_deleted(account.user_id)
@@ -665,10 +698,11 @@ class AuthService:
                 raise AuthError(
                     'account_deleted', 'Your account is deactivated. Use "Reactivate account".', status=403
                 )
-            return user
+            return user, False
 
         user = await self._repo.get_by_email_any(email)
         if user is None:
+            is_new_user = True
             user = await self._repo.create_google_user(
                 email=email, first_name=first_name, last_name=last_name, avatar_url=avatar_url
             )
@@ -677,8 +711,12 @@ class AuthService:
             raise AuthError(
                 'account_deleted', 'Your account is deactivated. Use "Reactivate account".', status=403
             )
+        else:
+            await self._repo.apply_google_profile_hints(
+                user.id, first_name=first_name, last_name=last_name, avatar_url=avatar_url
+            )
         await self._repo.link_google_account(user=user, provider_user_id=provider_user_id, email=email)
-        return user
+        return user, is_new_user
 
     # -------------------------------------------------------------- restore
 

@@ -67,6 +67,10 @@ class AuthRepository:
         stmt = select(User.id).where(User.email == email).limit(1)
         return (await self.db.execute(stmt)).scalar_one_or_none() is not None
 
+    async def phone_taken(self, phone_e164: str) -> bool:
+        stmt = select(UserProfile.user_id).where(UserProfile.phone_e164 == phone_e164).limit(1)
+        return (await self.db.execute(stmt)).scalar_one_or_none() is not None
+
     async def create_user(self, *, email: str, password_hash: str | None, role: Role) -> User:
         user = User(email=email, password_hash=password_hash, role_id=role.id)
         self.db.add(user)
@@ -248,6 +252,8 @@ class AuthRepository:
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def link_google_account(self, *, user: User, provider_user_id: str, email: str) -> None:
+        if await self.find_google_account(provider_user_id) is not None:
+            return
         self.db.add(
             OAuthAccount(
                 user_id=user.id,
@@ -257,6 +263,35 @@ class AuthRepository:
             )
         )
         await self.db.flush()
+
+    async def apply_google_profile_hints(
+        self,
+        user_id: uuid.UUID,
+        *,
+        first_name: str,
+        last_name: str,
+        avatar_url: str | None,
+    ) -> None:
+        stmt = select(UserProfile).where(UserProfile.user_id == user_id)
+        profile = (await self.db.execute(stmt)).scalar_one_or_none()
+        if profile is None:
+            self.db.add(
+                UserProfile(
+                    user_id=user_id,
+                    first_name=first_name,
+                    last_name=last_name,
+                    avatar_url=avatar_url,
+                )
+            )
+        else:
+            if not profile.first_name.strip():
+                profile.first_name = first_name
+            if not profile.last_name.strip():
+                profile.last_name = last_name
+            if avatar_url and not profile.avatar_url:
+                profile.avatar_url = avatar_url
+        await self.db.flush()
+        await self.mark_profile_complete(user_id)
 
     async def create_google_user(
         self, *, email: str, first_name: str, last_name: str, avatar_url: str | None

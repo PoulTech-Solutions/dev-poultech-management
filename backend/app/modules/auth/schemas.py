@@ -106,7 +106,7 @@ class SignupRequest(_StrictModel, _PasswordMixin):
     email: EmailStr
     first_name: str = Field(min_length=2, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
-    phone: str | None = None
+    phone: str
     confirm_password: str
 
     @field_validator('email')
@@ -124,8 +124,8 @@ class SignupRequest(_StrictModel, _PasswordMixin):
 
     @field_validator('phone')
     @classmethod
-    def _phone(cls, value: str | None) -> str | None:
-        return normalise_indian_mobile(value) if value else None
+    def _phone(cls, value: str) -> str:
+        return normalise_indian_mobile(value)
 
     @model_validator(mode='after')
     def _match(self) -> SignupRequest:

@@ -178,9 +178,7 @@ class UsersService:
 
         user = await self._reload(user.id)
         # confirm=True: we just revoked every row, including this device.
-        issued = await auth_service._open_session(
-            user, request, confirm=True, purpose='email_change'
-        )
+        issued = await auth_service._open_session(user, request, confirm=True, purpose='email_change')
         profile = await self.read_self(user)
         log.info('email_changed', user_id=str(user.id), destination=mask_email(new_email))
         return issued, profile

@@ -9,9 +9,12 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from app.db.models.profile import UserProfile
 from app.db.models.sessions import UserSession
+from app.db.models.users import User
 from app.tests.conftest import (
     TEST_PASSWORD,
+    TEST_PHONE,
     bearer,
     cookie_value,
     login,
@@ -33,6 +36,7 @@ async def test_signup_creates_unverified_user_and_challenges(client, seeded, db)
             'confirm_password': TEST_PASSWORD,
             'first_name': 'Ashish',
             'last_name': 'Kumar',
+            'phone': TEST_PHONE,
         },
     )
     assert resp.status_code == 202, resp.text
@@ -42,13 +46,47 @@ async def test_signup_creates_unverified_user_and_challenges(client, seeded, db)
     assert 'otp' not in body
     assert 'otp_session_id' in body
 
-    from app.db.models.users import User
-
     user = (await db.execute(select(User).where(User.email == email.lower()))).scalar_one()
     assert user.is_email_verified is False
     assert user.password_hash is not None
+    profile_row = select(UserProfile).where(UserProfile.user_id == user.id)
+    profile = (await db.execute(profile_row)).scalar_one_or_none()
+    assert profile is None, 'profile is persisted only after verify-email'
     assert not user.password_hash.startswith(TEST_PASSWORD)
     assert user.role.name == 'user'
+
+
+async def test_signup_profile_created_only_after_email_verify(client, seeded, db):
+    email = new_email()
+    signup = await client.post(
+        '/api/v1/auth/signup',
+        json={
+            'email': email,
+            'password': TEST_PASSWORD,
+            'confirm_password': TEST_PASSWORD,
+            'first_name': 'Ashish',
+            'last_name': 'Kumar',
+            'phone': TEST_PHONE,
+        },
+    )
+    assert signup.status_code == 202
+    sid = signup.json()['otp_session_id']
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
+
+    assert (
+        await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
+    ).scalar_one_or_none() is None
+
+    otp = await read_otp('signup', sid)
+    verified = await client.post(
+        '/api/v1/auth/verify-email', json={'otp_session_id': sid, 'otp': otp, 'purpose': 'signup'}
+    )
+    assert verified.status_code == 200
+    profile = (await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))).scalar_one()
+    assert profile.first_name == 'Ashish'
+    assert profile.phone_e164 is not None
+    await db.refresh(user)
+    assert user.is_email_verified is True
 
 
 async def test_full_registration_then_first_signin(client, seeded):
@@ -61,6 +99,7 @@ async def test_full_registration_then_first_signin(client, seeded):
     assert me.json()['first_name'] == 'Ashish'
     assert me.json()['role'] == 'user'
     assert me.json()['must_verify_email'] is False
+    assert me.json()['is_profile_complete'] is True
 
 
 async def test_duplicate_email_is_refused(client, seeded):
@@ -73,6 +112,7 @@ async def test_duplicate_email_is_refused(client, seeded):
             'confirm_password': TEST_PASSWORD,
             'first_name': 'Other',
             'last_name': 'Person',
+            'phone': '9123456789',
         },
     )
     assert again.status_code == 409
@@ -90,7 +130,12 @@ async def test_duplicate_email_is_refused(client, seeded):
     ],
 )
 async def test_signup_validation_never_creates_a_row(client, seeded, payload, field):
-    base = {'email': new_email(), 'first_name': 'Ashish', 'last_name': 'Kumar'}
+    base = {
+        'email': new_email(),
+        'first_name': 'Ashish',
+        'last_name': 'Kumar',
+        'phone': TEST_PHONE,
+    }
     resp = await client.post('/api/v1/auth/signup', json={**base, **payload})
     assert resp.status_code == 422, resp.text
     if field == 'confirm_password':
@@ -100,15 +145,17 @@ async def test_signup_validation_never_creates_a_row(client, seeded, payload, fi
         assert any(d['field'].endswith(field) for d in resp.json()['error']['details'])
 
 
-async def test_wrong_password_is_indistinguishable(client, seeded):
+async def test_login_unknown_email_vs_wrong_password(client, seeded):
     account = await register_and_verify(client)
     unknown = await client.post('/api/v1/auth/login', json={'email': new_email(), 'password': TEST_PASSWORD})
     wrong = await client.post(
         '/api/v1/auth/login', json={'email': account['email'], 'password': 'Wr0ng!Pass9'}
     )
     assert unknown.status_code == wrong.status_code == 400
-    assert unknown.json()['error']['code'] == wrong.json()['error']['code'] == 'invalid_credentials'
-    assert unknown.json()['error']['message'] == wrong.json()['error']['message']
+    assert unknown.json()['error']['code'] == 'registration_required'
+    assert wrong.json()['error']['code'] == 'invalid_credentials'
+    assert 'could not find an account' in unknown.json()['error']['message'].lower()
+    assert 'incorrect' in wrong.json()['error']['message'].lower()
 
 
 async def test_five_wrong_otp_codes_kills_the_challenge(client, seeded):
@@ -128,6 +175,20 @@ async def test_five_wrong_otp_codes_kills_the_challenge(client, seeded):
     assert last.json()['error']['code'] == 'otp_expired'
 
 
+async def test_signup_requires_indian_phone(client, seeded):
+    resp = await client.post(
+        '/api/v1/auth/signup',
+        json={
+            'email': new_email(),
+            'password': TEST_PASSWORD,
+            'confirm_password': TEST_PASSWORD,
+            'first_name': 'Ashish',
+            'last_name': 'Kumar',
+        },
+    )
+    assert resp.status_code == 422, resp.text
+
+
 async def test_otp_is_single_use(client, seeded):
     email = new_email()
     signup = await client.post(
@@ -138,6 +199,7 @@ async def test_otp_is_single_use(client, seeded):
             'confirm_password': TEST_PASSWORD,
             'first_name': 'Ashish',
             'last_name': 'Kumar',
+            'phone': TEST_PHONE,
         },
     )
     sid = signup.json()['otp_session_id']
@@ -153,6 +215,51 @@ async def test_otp_is_single_use(client, seeded):
     assert second.json()['error']['code'] == 'otp_expired'
 
 
+async def test_resend_otp_signup_and_login(client, seeded):
+    email = new_email()
+    signup = await client.post(
+        '/api/v1/auth/signup',
+        json={
+            'email': email,
+            'password': TEST_PASSWORD,
+            'confirm_password': TEST_PASSWORD,
+            'first_name': 'Ashish',
+            'last_name': 'Kumar',
+            'phone': TEST_PHONE,
+        },
+    )
+    assert signup.status_code == 202
+    sid = signup.json()['otp_session_id']
+    otp_old = await read_otp('signup', sid)
+    resend = await client.post('/api/v1/auth/resend-otp', json={'otp_session_id': sid, 'purpose': 'signup'})
+    assert resend.status_code == 200, resend.text
+    assert resend.json()['purpose'] == 'signup'
+    otp_new = await read_otp('signup', sid)
+    assert otp_new != otp_old
+    wrong = await client.post(
+        '/api/v1/auth/verify-email',
+        json={'otp_session_id': sid, 'otp': otp_old, 'purpose': 'signup'},
+    )
+    assert wrong.status_code == 400
+    assert wrong.json()['error']['code'] == 'otp_invalid'
+    ok = await client.post(
+        '/api/v1/auth/verify-email',
+        json={'otp_session_id': sid, 'otp': otp_new, 'purpose': 'signup'},
+    )
+    assert ok.status_code == 200
+
+    challenge = await client.post('/api/v1/auth/login', json={'email': email, 'password': TEST_PASSWORD})
+    assert challenge.status_code == 200
+    login_sid = challenge.json()['otp_session_id']
+    login_old = await read_otp('login', login_sid)
+    login_resend = await client.post(
+        '/api/v1/auth/resend-otp', json={'otp_session_id': login_sid, 'purpose': 'login'}
+    )
+    assert login_resend.status_code == 200
+    login_new = await read_otp('login', login_sid)
+    assert login_new != login_old
+
+
 async def test_login_code_cannot_be_used_for_signup(client, seeded):
     """Purpose binding: same 6 digits, wrong flow, refused."""
     email = new_email()
@@ -164,6 +271,7 @@ async def test_login_code_cannot_be_used_for_signup(client, seeded):
             'confirm_password': TEST_PASSWORD,
             'first_name': 'Ashish',
             'last_name': 'Kumar',
+            'phone': TEST_PHONE,
         },
     )
     sid = signup.json()['otp_session_id']
@@ -234,6 +342,15 @@ async def test_logout_revokes_the_session(client, seeded, db):
     me = await client.get('/api/v1/me', headers=bearer(tokens))
     assert me.status_code == 401
     assert me.json()['error']['code'] == 'session_revoked'
+
+    client.cookies.clear()
+    refresh = await client.post(
+        '/api/v1/auth/refresh',
+        headers={'X-Poultech-Refresh': '1'},
+        json={'refresh_token': tokens['refresh_token']},
+    )
+    assert refresh.status_code == 401, refresh.text
+    assert refresh.json()['error']['code'] in {'session_revoked', 'invalid_refresh', 'missing_refresh'}
 
 
 async def test_second_device_is_refused_before_an_email_is_sent(client, seeded):

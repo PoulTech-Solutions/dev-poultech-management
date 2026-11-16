@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 TEST_PASSWORD = 'Str0ng!Pass1'
+TEST_PHONE = '9876543210'
 _TABLES = (
     'user_sessions',
     'oauth_accounts',
@@ -192,6 +193,11 @@ def new_email(prefix: str = 'farmer') -> str:
     return f'{prefix}.{uuid.uuid4().hex[:10]}@example.com'
 
 
+def new_phone() -> str:
+    """Unique Indian mobile (10 digits, leading 6-9); signup enforces one phone per account."""
+    return f'9{uuid.uuid4().int % 1_000_000_000:09d}'
+
+
 async def register_and_verify(client: AsyncClient, *, email: str | None = None, **overrides):
     email = email or new_email()
     body = {
@@ -202,6 +208,7 @@ async def register_and_verify(client: AsyncClient, *, email: str | None = None, 
         'last_name': 'Kumar',
         **overrides,
     }
+    body.setdefault('phone', new_phone())
     signup = await client.post('/api/v1/auth/signup', json=body)
     assert signup.status_code == 202, signup.text
     sid = signup.json()['otp_session_id']

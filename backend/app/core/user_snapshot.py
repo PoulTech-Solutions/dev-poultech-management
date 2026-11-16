@@ -28,7 +28,7 @@ def profile_snapshot(user: User) -> dict[str, Any]:
         'avatar_url': profile.avatar_url if profile else None,
         'preferred_language': profile.preferred_language if profile else 'en',
         'region': profile.region if profile else None,
-        'is_profile_complete': bool(profile and profile.is_profile_complete),
+        'is_profile_complete': bool(profile and profile.has_required_fields),
         'is_email_verified': user.is_email_verified,
         'must_verify_email': not user.is_email_verified,
         'created_at': user.created_at.isoformat(),

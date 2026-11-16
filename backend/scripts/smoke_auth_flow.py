@@ -110,6 +110,7 @@ async def run(base_url: str, otp: str | None, otp_file: str | None) -> int:
                 'confirm_password': PASSWORD,
                 'first_name': 'Smoke',
                 'last_name': 'Tester',
+                'phone': '9876543210',
             },
         )
         if signup.status_code != 202:

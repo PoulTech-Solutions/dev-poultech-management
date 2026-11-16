@@ -128,7 +128,8 @@ async def change_password(
 
 @router.post('/google', dependencies=[Depends(limit('auth:google'))])
 async def google_login(payload: GoogleLoginRequest, request: Request, auth: AuthS) -> Response:
-    return auth.token_response(await auth.google(payload.id_token, request))
+    issued, meta = await auth.google(payload.id_token, request)
+    return auth.token_response(issued, extra=meta)
 
 
 @router.post('/restore', dependencies=[Depends(limit('auth:restore'))])

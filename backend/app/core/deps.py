@@ -60,9 +60,7 @@ def _as_epoch(value: datetime | None) -> str:
     return str(int(value.timestamp()))
 
 
-def _bearer_token(
-    request: Request, credentials: HTTPAuthorizationCredentials | None = None
-) -> str:
+def _bearer_token(request: Request, credentials: HTTPAuthorizationCredentials | None = None) -> str:
     if credentials is not None and credentials.scheme.lower() == 'bearer' and credentials.credentials:
         return credentials.credentials.strip()
     header = request.headers.get('authorization') or ''

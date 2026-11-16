@@ -1,7 +1,8 @@
 # Local stack. Secrets and mail live in `.env` — Compose only remaps
 # Docker-network hostnames via *_DOCKER keys (see `.env.example`).
 #
-#   docker compose up -d postgres redis mailpit
+#   docker compose up -d postgres redis
+#   Optional fake inbox: docker compose --profile mailpit up -d mailpit
 #   docker compose --profile app up -d --build
 #
 # Host uvicorn: use DATABASE_URL / REDIS_* pointing at localhost ports.
@@ -13,6 +14,9 @@ x-app-env: &app-env
   REDIS_URL: ${REDIS_URL_DOCKER}
   CELERY_BROKER_URL: ${CELERY_BROKER_URL_DOCKER}
   CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND_DOCKER}
+  # SMTP / EMAIL_BACKEND: from `.env` only (same Brevo settings as host uvicorn). No Mailpit override.
+  # Local Docker: default off — host `.env` often has RATE_LIMIT_ENABLED=true (10 logins/hour/IP).
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED_DOCKER:-false}
 
 services:
   postgres:
@@ -42,7 +46,9 @@ services:
 
   mailpit:
     image: axllent/mailpit
-    # Local catcher when SMTP_HOST=mailpit (containers) or localhost (host).
+    # Optional local catcher — not started with `app` profile. Use: docker compose --profile mailpit up -d mailpit
+    # Then set SMTP_HOST=mailpit SMTP_PORT=1025 SMTP_USE_TLS=false (empty user/password) in `.env`.
+    profiles: ['mailpit']
     ports:
       - '${MAILPIT_SMTP_HOST_PORT:-1025}:1025'
       - '${MAILPIT_UI_HOST_PORT:-8025}:8025'
@@ -71,6 +77,8 @@ services:
       <<: *app-env
       JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH_DOCKER}
       JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH_DOCKER}
+      # Docker-only list so host `.env` CORS_ORIGINS (e.g. :5173) does not block Expo :8088.
+      CORS_ORIGINS: ${CORS_ORIGINS_DOCKER:-http://localhost:5173,http://localhost:8088,http://127.0.0.1:8088,http://localhost:8080,http://127.0.0.1:8080,http://localhost:19006}
     volumes: ['./keys:/srv/poultech/keys:ro']
     ports: ['${API_HOST_PORT:-8000}:8000']
     depends_on:

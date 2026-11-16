@@ -116,7 +116,9 @@ def _otp_html(display_name: str, otp: str, purpose: str, minutes: int) -> str:
 """
 
 
-def _render_otp(to: str, subject: str, *, display_name: str, otp: str, purpose: str, minutes: int) -> EmailMessage:
+def _render_otp(
+    to: str, subject: str, *, display_name: str, otp: str, purpose: str, minutes: int
+) -> EmailMessage:
     s = get_settings()
     msg = EmailMessage()
     msg['From'] = formataddr((s.smtp_from_name, s.smtp_from))
@@ -165,8 +167,8 @@ def _smtp_send(msg: EmailMessage) -> None:
         if settings.smtp_use_tls:
             smtp.starttls(context=ssl.create_default_context())
         smtp.ehlo()
-        # Mailpit and many local SMTPs have no AUTH; only login when both are set.
-        if settings.smtp_user.strip() and settings.smtp_password:
+        # Mailpit and many local SMTPs have no AUTH; only login when configured and supported.
+        if settings.smtp_user.strip() and settings.smtp_password and smtp.has_extn('AUTH'):
             smtp.login(settings.smtp_user, settings.smtp_password)
         refused = smtp.send_message(msg)
     if refused:
@@ -187,9 +189,7 @@ def _deliver(to: str, subject: str, body: str) -> None:
     _smtp_send(_render_generic(to, subject, body))
 
 
-def _deliver_otp(
-    to: str, subject: str, *, display_name: str, otp: str, purpose: str, minutes: int
-) -> None:
+def _deliver_otp(to: str, subject: str, *, display_name: str, otp: str, purpose: str, minutes: int) -> None:
     settings = get_settings()
     if settings.email_backend == 'console':
         body = _otp_plain(display_name, otp, purpose, minutes)
@@ -199,9 +199,7 @@ def _deliver_otp(
         )
         log.info('email_printed_to_console', to=to, subject=subject)
         return
-    _smtp_send(
-        _render_otp(to, subject, display_name=display_name, otp=otp, purpose=purpose, minutes=minutes)
-    )
+    _smtp_send(_render_otp(to, subject, display_name=display_name, otp=otp, purpose=purpose, minutes=minutes))
 
 
 @celery_app.task(base=_SendTask, name='app.tasks.email.send_email')
@@ -232,7 +230,5 @@ def send_otp_email(
     minutes = max(round(settings.otp_ttl_seconds / 60), 1)
     # Delivered inline: chaining send_email from a worker would occupy two slots
     # per OTP and can deadlock the queue under load.
-    _deliver_otp(
-        to, subject, display_name=display_name, otp=otp, purpose=purpose, minutes=minutes
-    )
+    _deliver_otp(to, subject, display_name=display_name, otp=otp, purpose=purpose, minutes=minutes)
     log.info('otp_email_sent', to=to, purpose=purpose)

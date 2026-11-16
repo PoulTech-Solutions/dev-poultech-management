@@ -290,6 +290,7 @@ async def test_delete_does_not_release_the_email(client, seeded):
             'confirm_password': TEST_PASSWORD,
             'first_name': 'Stran',
             'last_name': 'Ger',
+            'phone': '9123456789',
         },
     )
     assert stranger.status_code == 409

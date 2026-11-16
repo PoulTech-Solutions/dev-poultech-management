@@ -47,12 +47,8 @@ class UserProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     @property
     def has_required_fields(self) -> bool:
-        """'Complete' = we can greet them and show rates for their area.
-
-        Phone is deliberately excluded: SMS OTP delivery is not live yet, so it
-        must never be what blocks a farmer from using the app.
-        """
-        return bool(self.first_name and self.last_name and self.region and self.district)
+        """Minimum fields collected at signup (name + Indian mobile)."""
+        return bool(self.first_name and self.last_name and self.phone_e164)
 
     user: Mapped['User'] = relationship(back_populates='profile')
 
