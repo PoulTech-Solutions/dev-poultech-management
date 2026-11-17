@@ -25,6 +25,8 @@ LIMITS: dict[str, tuple[int, int]] = {
     'profile:email': (5, 3600),
     'account:delete': (3, 3600),
     'sessions:list': (60, 60),
+    'market:read': (120, 60),
+    'market:write': (30, 60),
 }
 
 

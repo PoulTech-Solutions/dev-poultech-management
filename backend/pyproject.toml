@@ -22,7 +22,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "app/tests/*" = ["S105", "S106", "ARG001"]
-"scripts/*" = ["T201"]
+"scripts/*" = ["T201", "E402", "E501"]
+"app/modules/market/schemas.py" = ["N815"]
+"app/modules/market/router.py" = ["ARG001"]
 # Console backend prints; HTML email templates are long by nature.
 "app/tasks/email.py" = ["T201", "E501"]
 

@@ -32,6 +32,7 @@ class UserProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     address_line2: Mapped[str | None] = mapped_column(String(255))
     village_city: Mapped[str | None] = mapped_column(String(100))
     district: Mapped[str | None] = mapped_column(String(100))
+    tehsil: Mapped[str | None] = mapped_column(String(100))
     state: Mapped[str | None] = mapped_column(String(100))
     pincode: Mapped[str | None] = mapped_column(String(6))
     country: Mapped[str] = mapped_column(String(2), default='IN', server_default=text("'IN'"), nullable=False)
@@ -41,6 +42,7 @@ class UserProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         String(10), default='en', server_default=text("'en'"), nullable=False
     )
     region: Mapped[str | None] = mapped_column(String(100))  # used for "rates in your region"
+    market_preferred_zone: Mapped[str | None] = mapped_column(String(120))
     is_profile_complete: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=text('false'), nullable=False
     )
@@ -49,6 +51,10 @@ class UserProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def has_required_fields(self) -> bool:
         """Minimum fields collected at signup (name + Indian mobile)."""
         return bool(self.first_name and self.last_name and self.phone_e164)
+
+    def has_location_for_market(self) -> bool:
+        """Profile address used to resolve NECC zone (GPS / live location deferred)."""
+        return bool(self.pincode and self.state and self.district)
 
     user: Mapped['User'] = relationship(back_populates='profile')
 

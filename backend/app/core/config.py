@@ -97,6 +97,20 @@ class Settings(BaseSettings):
 
     rate_limit_enabled: bool = True
 
+    necc_egg_price_url: str = 'https://www.e2necc.com/home/eggprice'
+    market_default_zone: str = 'Pune'
+    market_sync_enabled: bool = True
+    market_http_timeout_seconds: int = Field(default=30, ge=5, le=120)
+    market_dashboard_cache_seconds: int = Field(default=300, ge=0, le=3600)
+    market_sync_months_back: int = Field(default=12, ge=1, le=24)
+    market_compare_max_zones: int = Field(default=50, ge=1, le=80)
+    # Celery Beat — NECC does not publish on a fixed clock; poll often (cron, UTC).
+    market_sync_cron_minute: int = Field(default=5, ge=0, le=59)
+    market_sync_cron_hour: str = Field(
+        default='*/3',
+        description='Crontab hour field, e.g. */3 or 0,6,12,18',
+    )
+
     # Filled from otp_hmac_secret when not set; used to encrypt OTPs in transit.
     otp_transport_key: str = ''
 

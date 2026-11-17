@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.core.config import get_settings
@@ -19,7 +20,7 @@ celery_app = Celery(
     'poultech',
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=['app.tasks.email'],
+    include=['app.tasks.email', 'app.tasks.market'],
 )
 
 celery_app.conf.update(
@@ -55,8 +56,20 @@ celery_app.conf.update(
         _queue('reports'),
         _queue('scheduled'),
     ),
-    task_routes={'app.tasks.email.*': {'queue': 'email'}},
-    beat_schedule={},  # periodic jobs will be added in later steps
+    task_routes={
+        'app.tasks.email.*': {'queue': 'email'},
+        'app.tasks.market.*': {'queue': 'scheduled'},
+    },
+    beat_schedule={
+        'market-sync-necc-egg-rates': {
+            'task': 'app.tasks.market.sync_necc_egg_rates',
+            'schedule': crontab(
+                minute=settings.market_sync_cron_minute,
+                hour=settings.market_sync_cron_hour,
+            ),
+            'options': {'queue': 'scheduled'},
+        },
+    },
     # In test the task runs inline: no broker round trip, and a mail failure
     # surfaces as the assertion instead of a 20-second connect retry.
     task_always_eager=settings.app_env == 'test',

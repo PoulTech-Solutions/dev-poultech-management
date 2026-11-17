@@ -1,11 +1,71 @@
+# --- Secrets & local config (never commit) ---
 .env
 .env.*
 !.env.example
+!**/.env.example
 *.pem
 keys/
-.venv/
+**/keys/
+
+# --- Python ---
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+
+# --- Tool caches ---
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# --- Logs & temp ---
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# --- Docker (local-only overrides) ---
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# --- Frontend (if present at repo root later) ---
 node_modules/
+
+# --- Local DB dumps / backups ---
+*.dump
+*.bak
+backup*.sql
+dump*.sql

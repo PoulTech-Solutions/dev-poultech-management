@@ -14,6 +14,10 @@ EXPECTED_TABLES = {
     'oauth_accounts',
     'user_sessions',
     'audit_logs',
+    'market_egg_zones',
+    'market_egg_daily',
+    'market_egg_month_summaries',
+    'market_sync_runs',
 }
 
 

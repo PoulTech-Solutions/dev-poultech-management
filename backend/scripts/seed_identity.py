@@ -22,10 +22,10 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-from app.core.security import hash_password, password_policy_errors  # noqa: E402
-from app.db.models.roles import Permission, Role, role_permissions  # noqa: E402
-from app.db.models.users import User  # noqa: E402
-from app.db.session import SessionLocal  # noqa: E402
+from app.core.security import hash_password, password_policy_errors
+from app.db.models.roles import Permission, Role, role_permissions
+from app.db.models.users import User
+from app.db.session import SessionLocal
 
 log = structlog.get_logger()
 

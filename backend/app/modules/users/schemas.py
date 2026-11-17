@@ -38,12 +38,14 @@ class ProfileResponse(BaseModel):
     address_line2: str | None
     village_city: str | None
     district: str | None
+    tehsil: str | None
     state: str | None
     pincode: str | None
     country: str
     avatar_url: str | None
     preferred_language: str
     region: str | None
+    market_preferred_zone: str | None
     is_profile_complete: bool
     is_email_verified: bool
     must_verify_email: bool
@@ -66,10 +68,12 @@ class ProfileUpdateRequest(_StrictModel):
     address_line2: str | None = Field(default=None, max_length=255)
     village_city: str | None = Field(default=None, max_length=100)
     district: str | None = Field(default=None, max_length=100)
+    tehsil: str | None = Field(default=None, max_length=100)
     state: str | None = Field(default=None, max_length=100)
     pincode: str | None = None
     preferred_language: str | None = None
     region: str | None = Field(default=None, max_length=100)
+    market_preferred_zone: str | None = Field(default=None, max_length=120)
 
     @field_validator('first_name')
     @classmethod
@@ -105,7 +109,9 @@ class ProfileUpdateRequest(_StrictModel):
             raise ValueError(f'Language must be one of {sorted(_LANGUAGES)}')
         return v
 
-    @field_validator('district', 'state', 'region', 'village_city', 'address_line1', 'address_line2')
+    @field_validator(
+        'district', 'state', 'tehsil', 'region', 'village_city', 'address_line1', 'address_line2'
+    )
     @classmethod
     def _trim(cls, v: str | None) -> str | None:
         return v.strip() if v else v

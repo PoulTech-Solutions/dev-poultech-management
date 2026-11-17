@@ -35,6 +35,10 @@ from sqlalchemy.pool import NullPool
 TEST_PASSWORD = 'Str0ng!Pass1'
 TEST_PHONE = '9876543210'
 _TABLES = (
+    'market_egg_daily',
+    'market_egg_month_summaries',
+    'market_sync_runs',
+    'market_egg_zones',
     'user_sessions',
     'oauth_accounts',
     'audit_logs',
