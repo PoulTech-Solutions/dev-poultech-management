@@ -180,8 +180,13 @@ async def run(base_url: str, otp: str | None, otp_file: str | None) -> int:
         # One account, one device: a second sign-in must be refused until confirmed.
         other = httpx.AsyncClient(base_url=base_url, timeout=30.0)
         clash = await other.post('/api/v1/auth/login', json={'email': email, 'password': PASSWORD})
-        details = clash.json().get('error', {}).get('details', {})
-        if clash.status_code != 409 or 'signed_in_at' not in details:
+        details = clash.json().get('error', {}).get('details')
+        signed_at = None
+        if isinstance(details, dict):
+            signed_at = details.get('signed_in_at')
+        elif isinstance(details, list) and details and isinstance(details[0], dict):
+            signed_at = details[0].get('signed_in_at')
+        if clash.status_code != 409 or not signed_at:
             print(
                 f'FAIL second device: expected 409 already_signed_in, got {clash.status_code}',
                 file=sys.stderr,

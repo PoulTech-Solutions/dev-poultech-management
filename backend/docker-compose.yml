@@ -94,6 +94,16 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS_DOCKER:-http://localhost:5173,http://localhost:8081,http://127.0.0.1:8081,http://localhost:8088,http://127.0.0.1:8088,http://localhost:8080,http://127.0.0.1:8080,http://localhost:19006}
     volumes: *app-code
     ports: ['${API_HOST_PORT:-8000}:8000']
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=8).status==200 else 1)
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 25s
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -102,16 +112,16 @@ services:
 
   worker:
     build: .
-    # Match local: listen on email (+ other) queues. OTP tasks route to `email`.
+    # OTP tasks route to `email`. No watchfiles — it OOMs on Windows bind mounts and kills OTP.
     command:
-      - watchfiles
-      - --filter
-      - python
-      - --sigint-timeout
-      - '25'
-      - --sigkill-timeout
-      - '15'
-      - celery -A app.core.celery_app.celery_app worker --loglevel=INFO --concurrency=2 -Q email,notifications,billing,reports,scheduled
+      - celery
+      - -A
+      - app.core.celery_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=2
+      - -Q
+      - email,notifications,billing,reports,scheduled
     env_file: [.env]
     environment: *app-env
     volumes: *app-code
@@ -131,10 +141,11 @@ services:
   beat:
     build: .
     command:
-      - watchfiles
-      - --filter
-      - python
-      - celery -A app.core.celery_app.celery_app beat --loglevel=INFO
+      - celery
+      - -A
+      - app.core.celery_app.celery_app
+      - beat
+      - --loglevel=INFO
     env_file: [.env]
     environment: *app-env
     volumes: *app-code

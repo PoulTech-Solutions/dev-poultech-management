@@ -204,3 +204,19 @@ class MarketEggSheetResponse(BaseModel):
     necc_sheet_average: str | None
     computed_daily_average: str | None
     days: list[MarketDayPrice]
+
+
+class MarketPoultrySheetResponse(BaseModel):
+    """Published manual rate days for one hub (exact rows only)."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    product: str
+    zone: str
+    year: int
+    month: int
+    today: str | None
+    yesterday: str | None
+    tomorrow: str | None
+    month_average: str | None
+    days: list[MarketDayPrice]

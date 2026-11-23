@@ -17,6 +17,7 @@ from app.modules.market.schemas import (
     MarketCoverageResponse,
     MarketDashboardResponse,
     MarketEggSheetResponse,
+    MarketPoultrySheetResponse,
     MarketTrendResponse,
     MarketZonePreferenceRequest,
     MarketZonesResponse,
@@ -115,6 +116,42 @@ async def egg_sheet(
     month: int = Query(..., ge=1, le=12),
 ) -> MarketEggSheetResponse:
     return await market.egg_sheet(zone, year, month)
+
+
+@router.get('/poultry/coverage', dependencies=[Depends(limit('market:read'))])
+async def poultry_coverage(
+    user: CurrentUser,
+    market: MarketS,
+    product: str = Query(..., pattern='^(culls|broilers)$'),
+    zone: str = Query(..., max_length=120),
+) -> MarketCoverageResponse:
+    return await market.poultry_coverage(product, zone)
+
+
+@router.get('/poultry/trend', dependencies=[Depends(limit('market:read'))])
+async def poultry_trend(
+    user: CurrentUser,
+    market: MarketS,
+    product: str = Query(..., pattern='^(culls|broilers)$'),
+    zone: str = Query(..., max_length=120),
+    window: str = Query(default='days', pattern='^(days|month|year)$'),
+    year: int | None = Query(default=None, ge=2016, le=2100),
+    month: int | None = Query(default=None, ge=1, le=12),
+    week: int | None = Query(default=None, ge=1, le=5),
+) -> MarketTrendResponse:
+    return await market.poultry_trend(product, zone, window, year=year, month=month, week=week)
+
+
+@router.get('/poultry/sheet', dependencies=[Depends(limit('market:read'))])
+async def poultry_sheet(
+    user: CurrentUser,
+    market: MarketS,
+    product: str = Query(..., pattern='^(culls|broilers)$'),
+    zone: str = Query(..., max_length=120),
+    year: int = Query(..., ge=2016, le=2100),
+    month: int = Query(..., ge=1, le=12),
+) -> MarketPoultrySheetResponse:
+    return await market.poultry_sheet(product, zone, year, month)
 
 
 @router.get(

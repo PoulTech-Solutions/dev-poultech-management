@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, extract, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -328,6 +328,39 @@ class MarketRepository:
         )
         rows = (await self.db.execute(stmt)).all()
         return {row.rate_date.day: row.price for row in rows}
+
+    async def published_poultry_dates_for_zone(
+        self, zone_id: uuid.UUID, product: str, *, since: date
+    ) -> list[tuple[int, int, int]]:
+        stmt = (
+            select(MarketPoultryDaily.rate_date)
+            .where(
+                MarketPoultryDaily.zone_id == zone_id,
+                MarketPoultryDaily.product == product,
+                MarketPoultryDaily.rate_date >= since,
+            )
+            .order_by(MarketPoultryDaily.rate_date.asc())
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return [(d.year, d.month, d.day) for d in rows]
+
+    async def poultry_monthly_averages_for_year(
+        self, zone_id: uuid.UUID, product: str, year: int
+    ) -> list[tuple[int, int, Decimal]]:
+        ycol = extract('year', MarketPoultryDaily.rate_date)
+        mcol = extract('month', MarketPoultryDaily.rate_date)
+        stmt = (
+            select(ycol, mcol, func.avg(MarketPoultryDaily.price))
+            .where(
+                MarketPoultryDaily.zone_id == zone_id,
+                MarketPoultryDaily.product == product,
+                ycol == year,
+            )
+            .group_by(ycol, mcol)
+            .order_by(mcol.asc())
+        )
+        rows = (await self.db.execute(stmt)).all()
+        return [(int(y), int(m), Decimal(str(avg))) for y, m, avg in rows]
 
     async def poultry_prices_since(
         self, zone_id: uuid.UUID, product: str, since: date

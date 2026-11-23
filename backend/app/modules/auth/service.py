@@ -83,6 +83,17 @@ _PURPOSE_LABELS = {
 _OTP_PENDING_KEYS = ('fn', 'ln', 'ph', 'pw', 'rl', 'cfm', 'p', 'ac')
 
 
+def _device_switch_details(signed_in_at: str) -> list[dict[str, str]]:
+    """List shape so clients can call details.map. signed_in_at stays on the item."""
+    return [
+        {
+            'field': 'session',
+            'message': 'Already signed in on another device',
+            'signed_in_at': signed_in_at,
+        }
+    ]
+
+
 def mask_email(email: str) -> str:
     local, _, domain = email.partition('@')
     if not domain:
@@ -459,7 +470,7 @@ class AuthService:
                 'or confirm to move this session here.',
                 code='already_signed_in',
                 # Same body as the verify-otp refusal, so the dialog needs one branch.
-                details={'signed_in_at': active.last_used_at.isoformat()},
+                details=_device_switch_details(active.last_used_at.isoformat()),
             )
         challenge = await self._issue_challenge(
             user=user,
@@ -560,7 +571,7 @@ class AuthService:
                     'This account is already signed in on another device. Sign out there first, '
                     'or confirm to move this session here.',
                     code='already_signed_in',
-                    details={'signed_in_at': existing.last_used_at.isoformat()},
+                    details=_device_switch_details(existing.last_used_at.isoformat()),
                 )
             await self._repo.revoke_session(existing, reason='device_switch')
             await drop_session_cache(session_id=str(existing.id))

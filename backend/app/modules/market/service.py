@@ -31,6 +31,7 @@ from app.modules.market.schemas import (
     MarketDashboardResponse,
     MarketDayPrice,
     MarketEggSheetResponse,
+    MarketPoultrySheetResponse,
     MarketRateCard,
     MarketTickerItem,
     MarketTrendPoint,
@@ -318,6 +319,173 @@ class MarketService:
             else None,
             days=days,
         )
+
+    async def poultry_coverage(self, product: str, zone_name: str) -> MarketCoverageResponse:
+        self._assert_poultry_product(product)
+        known = set(await self._repo.list_zone_names())
+        if not known:
+            raise MarketDataUnavailableError('No NECC zones in database')
+        zone_name = validate_zone_or_raise(zone_name, known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        today = _today_ist()
+        since = date(today.year - 4, 1, 1)
+        grouped: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+        for year, month, day in await self._repo.published_poultry_dates_for_zone(
+            zone.id, product, since=since
+        ):
+            grouped[year][month].add(day)
+        years = sorted(grouped, reverse=True)[:5]
+        months = {str(year): sorted(grouped[year]) for year in years}
+        weeks = {
+            f'{year}-{month:02d}': sorted({week_of_month(day) for day in days})
+            for year in years
+            for month, days in grouped[year].items()
+        }
+        return MarketCoverageResponse(zone=zone_name, years=years, months=months, weeks=weeks)
+
+    async def poultry_trend(
+        self,
+        product: str,
+        zone_name: str,
+        window: str,
+        *,
+        year: int | None = None,
+        month: int | None = None,
+        week: int | None = None,
+    ) -> MarketTrendResponse:
+        self._assert_poultry_product(product)
+        if window not in {'days', 'month', 'year'}:
+            from app.core.exceptions import AppError
+
+            raise AppError('window must be days, month, or year', code='validation_error')
+        known = set(await self._repo.list_zone_names())
+        if not known:
+            raise MarketDataUnavailableError('No NECC zones in database')
+        zone_name = validate_zone_or_raise(zone_name, known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        today = _today_ist()
+        sheet_year = year or today.year
+        sheet_month = month or today.month
+        month_map = await self._repo.poultry_prices_for_month(zone.id, product, sheet_year, sheet_month)
+        unit = POULTRY_PRODUCTS[product]['unit']
+
+        points: list[MarketTrendPoint] = []
+        series: list[float]
+        trend_week: int | None = None
+        if window == 'month':
+            if not month_map:
+                raise MarketDataUnavailableError(
+                    f'No {product} rates for {zone_name} in {sheet_year}-{sheet_month:02d}'
+                )
+            series = [float(month_map[d]) for d in sorted(month_map)]
+            for day in sorted(month_map):
+                points.append(
+                    MarketTrendPoint(
+                        date=date(sheet_year, sheet_month, day).isoformat(),
+                        value=float(month_map[day]),
+                    )
+                )
+        elif window == 'year':
+            year_rows = await self._repo.poultry_monthly_averages_for_year(zone.id, product, sheet_year)
+            if not year_rows:
+                raise MarketDataUnavailableError(f'No {product} rates for {zone_name} in {sheet_year}')
+            series = [float(avg) for _, _, avg in year_rows]
+            for y, m, avg in year_rows:
+                points.append(MarketTrendPoint(date=f'{y}-{m:02d}', value=float(avg)))
+        else:
+            if not month_map:
+                raise MarketDataUnavailableError(
+                    f'No {product} rates for {zone_name} in {sheet_year}-{sheet_month:02d}'
+                )
+            if week is not None:
+                from app.core.exceptions import AppError
+
+                try:
+                    start, end = week_day_span(sheet_year, sheet_month, week)
+                except ValueError as exc:
+                    raise AppError(str(exc), code='validation_error') from exc
+                trend_week = week
+            else:
+                start, end = 1, 31
+            days = [d for d in sorted(month_map) if start <= d <= end]
+            if week is None:
+                days = days[-7:]
+            series = []
+            for day in days:
+                val = float(month_map[day])
+                series.append(val)
+                points.append(
+                    MarketTrendPoint(
+                        date=date(sheet_year, sheet_month, day).isoformat(),
+                        value=val,
+                    )
+                )
+        if not series:
+            raise MarketDataUnavailableError('No trend data for this window')
+        return MarketTrendResponse(
+            zone=zone_name,
+            window=window,
+            unit=unit,
+            series=series,
+            points=points,
+            year=sheet_year,
+            month=sheet_month if window in {'days', 'month'} else None,
+            week=trend_week,
+            sheet_average=None,
+        )
+
+    async def poultry_sheet(
+        self, product: str, zone_name: str, year: int, month: int
+    ) -> MarketPoultrySheetResponse:
+        self._assert_poultry_product(product)
+        known = set(await self._repo.list_zone_names())
+        zone_name = validate_zone_or_raise(zone_name, known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        month_map = await self._repo.poultry_prices_for_month(zone.id, product, year, month)
+        if not month_map:
+            raise MarketDataUnavailableError(
+                f'No {product} rates for {zone_name} {year}-{month:02d}'
+            )
+        today = _today_ist()
+        days: list[MarketDayPrice] = []
+        for day in sorted(month_map):
+            days.append(
+                MarketDayPrice(
+                    day=day,
+                    date=date(year, month, day).isoformat(),
+                    price=_decimal_str(month_map[day]),
+                )
+            )
+        month_avg = sum(month_map.values(), Decimal(0)) / Decimal(len(month_map))
+        yday, tday, tmrw = None, None, None
+        if today.year == year and today.month == month:
+            td = today.day
+            tday = _decimal_str(month_map[td]) if td in month_map else None
+            if td - 1 in month_map:
+                yday = _decimal_str(month_map[td - 1])
+            if td + 1 in month_map:
+                tmrw = _decimal_str(month_map[td + 1])
+        return MarketPoultrySheetResponse(
+            product=product,
+            zone=zone_name,
+            year=year,
+            month=month,
+            today=tday,
+            yesterday=yday,
+            tomorrow=tmrw,
+            month_average=_decimal_str(month_avg),
+            days=days,
+        )
+
+    @staticmethod
+    def _assert_poultry_product(product: str) -> None:
+        if product not in MANUAL_PRODUCTS:
+            from app.core.exceptions import AppError
+
+            raise AppError('product must be culls or broilers', code='validation_error')
 
     async def set_preferred_zone(
         self,

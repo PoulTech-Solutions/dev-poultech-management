@@ -135,6 +135,63 @@ async def test_staff_upsert_and_dashboard_includes_poultry(market_ready, db: Asy
     assert 'Broiler rate' in tickers
 
 
+async def test_poultry_trend_coverage_and_sheet(market_ready, db: AsyncSession) -> None:
+    client, tokens, today = market_ready
+    role = (await db.execute(select(Role).where(Role.name == 'staff'))).scalar_one()
+    user = (await db.execute(select(User).where(User.email == tokens_email(client)))).scalar_one()
+    user.role_id = role.id
+    await db.commit()
+    staff_tokens = await relogin(client, tokens_email(client))
+
+    upsert = await client.put(
+        '/api/v1/market/admin/poultry-rates',
+        json={
+            'product': 'culls',
+            'zone': 'Pune',
+            'today': '50.00',
+            'yesterday': '49.00',
+        },
+        headers=bearer(staff_tokens),
+    )
+    assert upsert.status_code == 200, upsert.text
+
+    farmer_tokens = await relogin(client, tokens_email(client))
+    headers = bearer(farmer_tokens)
+    coverage = await client.get(
+        '/api/v1/market/poultry/coverage',
+        params={'product': 'culls', 'zone': 'Pune'},
+        headers=headers,
+    )
+    assert coverage.status_code == 200, coverage.text
+    assert coverage.json()['zone'] == 'Pune'
+    assert today.year in coverage.json()['years']
+
+    for window in ('month', 'year', 'days'):
+        trend = await client.get(
+            '/api/v1/market/poultry/trend',
+            params={
+                'product': 'culls',
+                'zone': 'Pune',
+                'window': window,
+                'year': today.year,
+                'month': today.month,
+            },
+            headers=headers,
+        )
+        assert trend.status_code == 200, trend.text
+        assert trend.json()['unit'] == 'per bird'
+        assert len(trend.json()['series']) >= 1
+
+    sheet = await client.get(
+        '/api/v1/market/poultry/sheet',
+        params={'product': 'culls', 'zone': 'Pune', 'year': today.year, 'month': today.month},
+        headers=headers,
+    )
+    assert sheet.status_code == 200, sheet.text
+    assert sheet.json()['product'] == 'culls'
+    assert sheet.json()['days']
+
+
 async def test_poultry_read_carries_last_published_and_upsert_overwrites(
     market_ready, db: AsyncSession
 ) -> None:
