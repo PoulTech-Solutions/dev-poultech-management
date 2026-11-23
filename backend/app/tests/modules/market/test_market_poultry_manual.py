@@ -136,7 +136,7 @@ async def test_staff_upsert_and_dashboard_includes_poultry(market_ready, db: Asy
 
 
 async def test_poultry_trend_coverage_and_sheet(market_ready, db: AsyncSession) -> None:
-    client, tokens, today = market_ready
+    client, _tokens, today = market_ready
     role = (await db.execute(select(Role).where(Role.name == 'staff'))).scalar_one()
     user = (await db.execute(select(User).where(User.email == tokens_email(client)))).scalar_one()
     user.role_id = role.id
