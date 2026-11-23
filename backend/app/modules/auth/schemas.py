@@ -23,7 +23,9 @@ from pydantic import (
 
 from app.core.security import password_policy_errors
 
-PurposeType = Literal['signup', 'login', 'reset', 'change_password', 'email_change', 'restore']
+PurposeType = Literal[
+    'signup', 'login', 'reset', 'change_password', 'email_change', 'restore', 'internal_signup'
+]
 
 _PINCODE_RE = re.compile(r'^[1-9][0-9]{5}$')
 

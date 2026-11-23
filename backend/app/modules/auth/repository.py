@@ -67,12 +67,29 @@ class AuthRepository:
         stmt = select(User.id).where(User.email == email).limit(1)
         return (await self.db.execute(stmt)).scalar_one_or_none() is not None
 
-    async def phone_taken(self, phone_e164: str) -> bool:
-        stmt = select(UserProfile.user_id).where(UserProfile.phone_e164 == phone_e164).limit(1)
+    async def phone_taken(self, phone_e164: str, *, exclude_user_id: uuid.UUID | None = None) -> bool:
+        stmt = select(UserProfile.user_id).where(UserProfile.phone_e164 == phone_e164)
+        if exclude_user_id is not None:
+            stmt = stmt.where(UserProfile.user_id != exclude_user_id)
+        stmt = stmt.limit(1)
         return (await self.db.execute(stmt)).scalar_one_or_none() is not None
 
-    async def create_user(self, *, email: str, password_hash: str | None, role: Role) -> User:
-        user = User(email=email, password_hash=password_hash, role_id=role.id)
+    async def create_user(
+        self,
+        *,
+        email: str,
+        password_hash: str | None,
+        role: Role,
+        is_active: bool = True,
+        is_email_verified: bool = False,
+    ) -> User:
+        user = User(
+            email=email,
+            password_hash=password_hash,
+            role_id=role.id,
+            is_active=is_active,
+            is_email_verified=is_email_verified,
+        )
         self.db.add(user)
         await self.db.flush()
         return user
@@ -111,6 +128,7 @@ class AuthRepository:
 
     async def verify_email(self, user: User) -> None:
         user.is_email_verified = True
+        user.is_active = True
         await self.db.flush()
 
     async def change_email(self, user: User, email: str) -> None:
@@ -228,10 +246,22 @@ class AuthRepository:
         # have none, which is exactly the 0 case.
         return int(getattr(result, 'rowcount', 0) or 0)
 
+    async def bump_token_version(self, user: User) -> None:
+        user.token_version = int(user.token_version or 0) + 1
+        await self.db.flush()
+
+    async def set_active(self, user: User, *, active: bool, reason: str) -> None:
+        user.is_active = active
+        if not active:
+            await self.bump_token_version(user)
+            await self.revoke_all_sessions(user.id, reason=reason)
+        await self.db.flush()
+
     async def soft_delete_user(self, user: User) -> None:
         user.is_active = False
         user.deleted_at = datetime.now(UTC)
         user.restore_token_hash = None
+        await self.bump_token_version(user)
         await self.revoke_all_sessions(user.id, reason='account_deleted')
         await self.db.flush()
 
@@ -299,7 +329,9 @@ class AuthRepository:
         role_name = get_settings().default_role_name
         role = await self.get_role_by_name(role_name)
         if role is None:
-            raise RuntimeError(f'roles not seeded, run scripts/seed_roles.py (missing {role_name!r})')
+            raise RuntimeError(
+                f'roles not seeded, run python -m scripts.seed_identity (missing {role_name!r})'
+            )
         user = User(
             email=email,
             password_hash=None,

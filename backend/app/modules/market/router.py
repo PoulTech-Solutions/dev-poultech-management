@@ -6,11 +6,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.deps import CurrentUser
+from app.core.deps import CurrentUser, require_permissions
 from app.core.rate_limit import limit
 from app.db.session import get_db
 from app.modules.market.schemas import (
+    ManualPoultryRateReadResponse,
+    ManualPoultryRateUpsertRequest,
+    ManualPoultryRateUpsertResponse,
     MarketCompareResponse,
+    MarketCoverageResponse,
     MarketDashboardResponse,
     MarketEggSheetResponse,
     MarketTrendResponse,
@@ -31,6 +35,7 @@ async def get_market_service(db: DbDep, settings: SettingsDep) -> MarketService:
 
 
 MarketS = Annotated[MarketService, Depends(get_market_service)]
+RatesManager = Annotated[CurrentUser, Depends(require_permissions('market:rates:manage'))]
 
 
 async def _load_user(db: DbDep, user: CurrentUser):
@@ -69,9 +74,7 @@ async def set_zone_preference(
     user: CurrentUser,
     market: MarketS,
 ) -> dict:
-    zone = await market.set_preferred_zone(
-        user.user_id, payload.zone, session_id=user.session_id
-    )
+    zone = await market.set_preferred_zone(user.user_id, payload.zone, session_id=user.session_id)
     return {'market_preferred_zone': zone}
 
 
@@ -79,6 +82,15 @@ async def set_zone_preference(
 async def all_cities_today(user: CurrentUser, market: MarketS) -> MarketCompareResponse:
     """Today's egg rate for every NECC city stored in the database (after sync)."""
     return await market.all_cities_today()
+
+
+@router.get('/eggs/coverage', dependencies=[Depends(limit('market:read'))])
+async def egg_coverage(
+    user: CurrentUser,
+    market: MarketS,
+    zone: str = Query(..., max_length=120),
+) -> MarketCoverageResponse:
+    return await market.egg_coverage(zone)
 
 
 @router.get('/eggs/trend', dependencies=[Depends(limit('market:read'))])
@@ -89,8 +101,9 @@ async def egg_trend(
     window: str = Query(default='days', pattern='^(days|month|year)$'),
     year: int | None = Query(default=None, ge=2016, le=2100),
     month: int | None = Query(default=None, ge=1, le=12),
+    week: int | None = Query(default=None, ge=1, le=5),
 ) -> MarketTrendResponse:
-    return await market.egg_trend(zone, window, year=year, month=month)
+    return await market.egg_trend(zone, window, year=year, month=month, week=week)
 
 
 @router.get('/eggs/sheet', dependencies=[Depends(limit('market:read'))])
@@ -102,6 +115,45 @@ async def egg_sheet(
     month: int = Query(..., ge=1, le=12),
 ) -> MarketEggSheetResponse:
     return await market.egg_sheet(zone, year, month)
+
+
+@router.get(
+    '/admin/poultry-rates',
+    dependencies=[Depends(limit('market:admin'))],
+    response_model=ManualPoultryRateReadResponse,
+)
+async def read_poultry_rates(
+    user: RatesManager,
+    market: MarketS,
+    product: str = Query(..., pattern='^(culls|broilers)$'),
+    zone: str = Query(..., max_length=120),
+) -> ManualPoultryRateReadResponse:
+    """Calendar rates for one hub. Missing days carry the last published value (not a second row)."""
+    return await market.read_manual_poultry_rates(
+        product=product, zone_name=zone, actor_role=user.role
+    )
+
+
+@router.put(
+    '/admin/poultry-rates',
+    dependencies=[Depends(limit('market:admin'))],
+    response_model=ManualPoultryRateUpsertResponse,
+)
+async def upsert_poultry_rates(
+    payload: ManualPoultryRateUpsertRequest,
+    user: RatesManager,
+    market: MarketS,
+) -> ManualPoultryRateUpsertResponse:
+    """Staff/admin manual culls & broiler rates per stored NECC city. One row per calendar day."""
+    return await market.upsert_manual_poultry_rates(
+        product=payload.product,
+        zone_name=payload.zone,
+        today=payload.today,
+        yesterday=payload.yesterday,
+        tomorrow=payload.tomorrow,
+        updated_by=user.user_id,
+        actor_role=user.role,
+    )
 
 
 @router.get('/eggs/compare', dependencies=[Depends(limit('market:read'))])

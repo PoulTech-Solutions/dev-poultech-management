@@ -3,7 +3,10 @@
 #
 #   docker compose up -d postgres redis
 #   Optional fake inbox: docker compose --profile mailpit up -d mailpit
-#   docker compose --profile app up -d --build
+#   First time / after requirements.txt: docker compose --profile app up -d --build
+#   After that: docker compose --profile app up -d   # .py edits reload; no --build
+#   .env change: docker compose --profile app up -d --force-recreate api worker beat
+#   New Alembic revision: docker compose --profile app run --rm migrate
 #
 # Host uvicorn: use DATABASE_URL / REDIS_* pointing at localhost ports.
 # Containers: env_file loads `.env`, then *_DOCKER overrides win for DB/Redis/JWT paths.
@@ -17,6 +20,12 @@ x-app-env: &app-env
   # SMTP / EMAIL_BACKEND: from `.env` only (same Brevo settings as host uvicorn). No Mailpit override.
   # Local Docker: default off — host `.env` often has RATE_LIMIT_ENABLED=true (10 logins/hour/IP).
   RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED_DOCKER:-false}
+  # Windows bind mounts do not get inotify; polling makes --reload / watchfiles work.
+  WATCHFILES_FORCE_POLLING: 'true'
+
+x-app-code: &app-code
+  - .:/srv/poultech
+  - ./keys:/srv/poultech/keys:ro
 
 services:
   postgres:
@@ -58,6 +67,7 @@ services:
     command: ['alembic', 'upgrade', 'head']
     env_file: [.env]
     environment: *app-env
+    volumes: *app-code
     depends_on:
       postgres: {condition: service_healthy}
     profiles: ['app']
@@ -72,14 +82,17 @@ services:
       - --port
       - '8000'
       - --proxy-headers
+      - --reload
+      - --reload-dir
+      - app
     env_file: [.env]
     environment:
       <<: *app-env
       JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH_DOCKER}
       JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH_DOCKER}
       # Docker-only list so host `.env` CORS_ORIGINS (e.g. :5173) does not block Expo :8088.
-      CORS_ORIGINS: ${CORS_ORIGINS_DOCKER:-http://localhost:5173,http://localhost:8088,http://127.0.0.1:8088,http://localhost:8080,http://127.0.0.1:8080,http://localhost:19006}
-    volumes: ['./keys:/srv/poultech/keys:ro']
+      CORS_ORIGINS: ${CORS_ORIGINS_DOCKER:-http://localhost:5173,http://localhost:8081,http://127.0.0.1:8081,http://localhost:8088,http://127.0.0.1:8088,http://localhost:8080,http://127.0.0.1:8080,http://localhost:19006}
+    volumes: *app-code
     ports: ['${API_HOST_PORT:-8000}:8000']
     depends_on:
       postgres: {condition: service_healthy}
@@ -91,16 +104,17 @@ services:
     build: .
     # Match local: listen on email (+ other) queues. OTP tasks route to `email`.
     command:
-      - celery
-      - -A
-      - app.core.celery_app.celery_app
-      - worker
-      - --loglevel=INFO
-      - --concurrency=2
-      - -Q
-      - email,notifications,billing,reports,scheduled
+      - watchfiles
+      - --filter
+      - python
+      - --sigint-timeout
+      - '25'
+      - --sigkill-timeout
+      - '15'
+      - celery -A app.core.celery_app.celery_app worker --loglevel=INFO --concurrency=2 -Q email,notifications,billing,reports,scheduled
     env_file: [.env]
     environment: *app-env
+    volumes: *app-code
     depends_on:
       redis: {condition: service_healthy}
     # Override image :8000 probe — verify this Celery process responds to inspect ping.
@@ -117,13 +131,13 @@ services:
   beat:
     build: .
     command:
-      - celery
-      - -A
-      - app.core.celery_app.celery_app
-      - beat
-      - --loglevel=INFO
+      - watchfiles
+      - --filter
+      - python
+      - celery -A app.core.celery_app.celery_app beat --loglevel=INFO
     env_file: [.env]
     environment: *app-env
+    volumes: *app-code
     depends_on:
       redis: {condition: service_healthy}
       worker: {condition: service_started}

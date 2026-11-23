@@ -38,6 +38,10 @@ _PURPOSE_COPY = {
     'change_password': ('Confirm password change', 'Use this code to confirm changing your password.'),
     'email_change': ('Confirm your new email', 'Use this code to confirm your new email address.'),
     'restore': ('Reactivate your account', 'Use this code to restore your Poultech account.'),
+    'internal_signup': (
+        'Confirm your staff account',
+        'Use this code so your admin can finish creating your Poultech account.',
+    ),
 }
 
 
@@ -163,14 +167,36 @@ class _SendTask(Task):
 
 def _smtp_send(msg: EmailMessage) -> None:
     settings = get_settings()
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
-        if settings.smtp_use_tls:
-            smtp.starttls(context=ssl.create_default_context())
+    user = settings.smtp_user.strip()
+    password = settings.smtp_password
+    if not user or not password:
+        raise RuntimeError('EMAIL_BACKEND=smtp requires SMTP_USER and SMTP_PASSWORD (Brevo SMTP key)')
+
+    log.info(
+        'smtp_connecting',
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        tls=settings.smtp_use_tls,
+    )
+    # Brevo: port 587 STARTTLS + AUTH LOGIN. Do not skip login (Mailpit had no AUTH).
+    if settings.smtp_port == 465:
+        smtp: smtplib.SMTP = smtplib.SMTP_SSL(
+            settings.smtp_host, settings.smtp_port, timeout=30, context=ssl.create_default_context()
+        )
+    else:
+        smtp = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30)
+    try:
         smtp.ehlo()
-        # Mailpit and many local SMTPs have no AUTH; only login when configured and supported.
-        if settings.smtp_user.strip() and settings.smtp_password and smtp.has_extn('AUTH'):
-            smtp.login(settings.smtp_user, settings.smtp_password)
+        if settings.smtp_use_tls and settings.smtp_port != 465:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.ehlo()
+        smtp.login(user, password)
         refused = smtp.send_message(msg)
+    finally:
+        try:
+            smtp.quit()
+        except smtplib.SMTPServerDisconnected:
+            smtp.close()
     if refused:
         log.error('email_recipient_refused', recipients=sorted(refused), subject=msg['Subject'])
         raise smtplib.SMTPRecipientsRefused(refused)

@@ -53,8 +53,14 @@ class UserProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         return bool(self.first_name and self.last_name and self.phone_e164)
 
     def has_location_for_market(self) -> bool:
-        """Profile address used to resolve NECC zone (GPS / live location deferred)."""
-        return bool(self.pincode and self.state and self.district)
+        """Enough address to map a NECC hub (pincode preferred; city/state still resolve)."""
+        return bool(
+            (self.pincode and self.state and self.district)
+            or self.village_city
+            or self.district
+            or self.state
+            or self.market_preferred_zone
+        )
 
     user: Mapped['User'] = relationship(back_populates='profile')
 

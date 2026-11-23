@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     max_password_length: int = 128
 
     # EMAIL_BACKEND / SMTP_* / SMTP_FROM_NAME / EMAIL_TAGLINE — from `.env` only.
-    # Compose must not hard-override these (Brevo, SES, Gmail, or Mailpit).
+    # Compose must not hard-override these. Local OTP mail is Brevo SMTP.
     email_backend: Literal['console', 'smtp'] = 'console'
     smtp_host: str = 'localhost'
     smtp_port: int = 587
@@ -104,11 +104,19 @@ class Settings(BaseSettings):
     market_dashboard_cache_seconds: int = Field(default=300, ge=0, le=3600)
     market_sync_months_back: int = Field(default=12, ge=1, le=24)
     market_compare_max_zones: int = Field(default=50, ge=1, le=80)
-    # Celery Beat — NECC does not publish on a fixed clock; poll often (cron, UTC).
-    market_sync_cron_minute: int = Field(default=5, ge=0, le=59)
+    geo_pincode_strict: bool = True
+    geo_pincode_search_min_digits: int = Field(default=3, ge=1, le=6)
+    geo_pincode_search_limit: int = Field(default=15, ge=1, le=30)
+    geo_pincode_cache_seconds: int = Field(default=86_400, ge=0, le=604_800)
+    # Celery Beat — daily NECC pull (cron in Celery app timezone: Asia/Kolkata).
+    market_sync_cron_minute: int = Field(default=0, ge=0, le=59)
     market_sync_cron_hour: str = Field(
-        default='*/3',
-        description='Crontab hour field, e.g. */3 or 0,6,12,18',
+        default='2',
+        description='Crontab hour (IST). Default 02:00 — full months_back sync; API reads DB only.',
+    )
+    market_sync_hourly: bool = Field(
+        default=True,
+        description='Also pull the current month sheet every hour (IST) for today NECC cell.',
     )
 
     # Filled from otp_hmac_secret when not set; used to encrypt OTPs in transit.

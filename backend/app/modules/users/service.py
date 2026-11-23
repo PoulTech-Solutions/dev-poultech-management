@@ -13,14 +13,17 @@ import structlog
 from fastapi import Request
 from sqlalchemy.exc import IntegrityError
 
+from app.core.config import get_settings
+from app.core.constants import RoleName
 from app.core.deps import CurrentUserData
-from app.core.exceptions import ConflictError, UnauthorizedError
+from app.core.exceptions import ConflictError, ForbiddenError, UnauthorizedError
 from app.core.security import verify_password_async
 from app.core.store import drop_session_cache, read_profile_cache, warm_session_caches
 from app.core.user_snapshot import permission_codes, profile_snapshot
 from app.db.models.users import User
 from app.modules.auth.repository import AuthRepository
 from app.modules.auth.service import AuthError, Issued, mask_email
+from app.modules.geo.service import GeoService
 from app.modules.users.repository import UsersRepository
 from app.modules.users.schemas import (
     AccountDeleteRequest,
@@ -31,6 +34,17 @@ from app.modules.users.schemas import (
 )
 
 log = structlog.get_logger()
+
+_PROFILE_LOCKED_ROLES = frozenset({RoleName.SUPER_ADMIN, RoleName.ADMIN, RoleName.STAFF})
+
+
+def _require_profile_editable(user: User) -> None:
+    role = user.role.name if user.role is not None else ''
+    if role in _PROFILE_LOCKED_ROLES:
+        raise ForbiddenError(
+            'Staff and admin accounts can change password only, not profile',
+            code='profile_locked',
+        )
 
 
 class UsersService:
@@ -58,6 +72,7 @@ class UsersService:
     async def update_profile(
         self, user: User, payload: ProfileUpdateRequest, *, session_id: uuid.UUID | None = None
     ) -> ProfileResponse:
+        _require_profile_editable(user)
         values = payload.model_dump(exclude_unset=True, exclude_none=True)
         profile = await self._repo.get_profile(user.id)
         phone = values.pop('phone', None)
@@ -81,6 +96,12 @@ class UsersService:
             values['phone_e164'] = phone
             # Verification is a separate feature; storing never claims it happened.
             values['is_phone_verified'] = False
+
+        geo = GeoService(self._db, get_settings())
+        values = await geo.apply_pincode_to_profile_values(values)
+        loc_changed = any(key in values for key in ('pincode', 'state', 'district', 'tehsil'))
+        if loc_changed and 'market_preferred_zone' not in values:
+            values['market_preferred_zone'] = None
 
         try:
             await self._repo.update_profile(profile, values)
@@ -115,6 +136,7 @@ class UsersService:
 
     async def start_email_change(self, user: User, payload: EmailChangeStartRequest, auth_service) -> dict:
         """Verify-then-apply: nothing is written until the new address returns a code."""
+        _require_profile_editable(user)
         if payload.email == user.email:
             raise ConflictError('That is already your email address', code='email_unchanged')
         if user.password_hash is not None and not await verify_password_async(

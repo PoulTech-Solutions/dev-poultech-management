@@ -141,6 +141,31 @@ async def test_super_admin_has_no_backdoor_on_user_routes(client, seeded, db):
         await client.delete(f'/api/v1/users/{victim_id}', headers=bearer(admin_tokens))
     ).status_code == 404
 
+    locked = await client.patch(
+        '/api/v1/me/profile', headers=bearer(admin_tokens), json={'district': 'Pune'}
+    )
+    assert locked.status_code == 403
+    assert locked.json()['error']['code'] == 'profile_locked'
+
+    email_change = await client.post(
+        '/api/v1/me/email',
+        headers=bearer(admin_tokens),
+        json={'email': new_email('locked'), 'password': TEST_PASSWORD},
+    )
+    assert email_change.status_code == 403
+    assert email_change.json()['error']['code'] == 'profile_locked'
+
+    changed = await client.post(
+        '/api/v1/auth/password/change',
+        headers=bearer(admin_tokens),
+        json={
+            'current_password': TEST_PASSWORD,
+            'password': 'N3w!Password',
+            'confirm_password': 'N3w!Password',
+        },
+    )
+    assert changed.status_code == 200, changed.text
+
 
 async def test_email_change_is_two_step_and_revokes_login(client, seeded):
     account = await register_and_verify(client)

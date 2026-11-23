@@ -27,13 +27,17 @@ celery_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
-    timezone='UTC',
+    timezone='Asia/Kolkata',
     enable_utc=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     task_time_limit=60,
     task_soft_time_limit=45,
+    task_annotations={
+        'app.tasks.email.send_otp_email': {'time_limit': 120, 'soft_time_limit': 90},
+        'app.tasks.email.send_email': {'time_limit': 120, 'soft_time_limit': 90},
+    },
     result_expires=3600,
     # Nothing in this batch reads a task result, and storing one makes the *producer*
     # open a connection to the result backend while publishing: with the backend down,
@@ -69,6 +73,18 @@ celery_app.conf.update(
             ),
             'options': {'queue': 'scheduled'},
         },
+        **(
+            {
+                'market-sync-necc-current-hour': {
+                    'task': 'app.tasks.market.sync_necc_egg_rates',
+                    'schedule': crontab(minute=settings.market_sync_cron_minute),
+                    'kwargs': {'current_only': True},
+                    'options': {'queue': 'scheduled'},
+                }
+            }
+            if settings.market_sync_hourly
+            else {}
+        ),
     },
     # In test the task runs inline: no broker round trip, and a mail failure
     # surfaces as the assertion instead of a 20-second connect retry.

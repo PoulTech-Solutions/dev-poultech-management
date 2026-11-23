@@ -39,10 +39,7 @@ AuthS = Annotated[AuthService, Depends(get_auth_service)]
 
 @router.post('/signup', status_code=202, dependencies=[Depends(limit('auth:signup'))])
 async def signup(payload: SignupRequest, auth: AuthS) -> dict:
-    """Create the account, then send the code that activates it.
-
-    202 rather than 200: the row exists, but it cannot sign in until verified.
-    """
+    """Send the signup OTP. User and profile rows are created only after verify-email."""
     return auth.challenge_payload(await auth.signup(payload))
 
 

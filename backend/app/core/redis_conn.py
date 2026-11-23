@@ -22,7 +22,12 @@ def get_redis() -> Redis:
 
     from redis.asyncio import Redis
 
-    return Redis.from_url(settings.redis_url, decode_responses=True)
+    return Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
 
 
 async def close_redis() -> None:

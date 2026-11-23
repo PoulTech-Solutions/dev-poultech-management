@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.v1.router import api_router
+from app.bootstrap.necc import schedule_necc_bootstrap
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
@@ -26,6 +27,7 @@ SAFE_PATHS = {'/health/live', '/health/ready'}
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     log.info('app_starting', env=settings.app_env)
+    schedule_necc_bootstrap(settings)
     yield
     await close_redis()
     await engine.dispose()
@@ -49,7 +51,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=['GET', 'POST', 'PATCH', 'DELETE'],
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allow_headers=['Authorization', 'Content-Type', 'X-Request-ID', 'X-Poultech-Refresh'],
 )
 
@@ -70,7 +72,10 @@ async def request_context(request: Request, call_next):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Referrer-Policy'] = 'no-referrer'
-    response.headers['Cache-Control'] = 'no-store'
+    if request.method == 'GET' and request.url.path.startswith('/api/v1/geo/'):
+        response.headers['Cache-Control'] = 'public, max-age=120'
+    else:
+        response.headers['Cache-Control'] = 'no-store'
     if settings.is_prod and request.url.scheme == 'https':
         response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     if request.url.path not in SAFE_PATHS:

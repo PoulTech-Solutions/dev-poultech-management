@@ -4,7 +4,18 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -19,6 +30,7 @@ class MarketEggZone(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     daily_prices: Mapped[list[MarketEggDaily]] = relationship(back_populates='zone')
     month_summaries: Mapped[list[MarketEggMonthSummary]] = relationship(back_populates='zone')
+    poultry_prices: Mapped[list[MarketPoultryDaily]] = relationship(back_populates='zone')
 
 
 class MarketEggDaily(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -56,6 +68,29 @@ class MarketEggMonthSummary(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint('zone_id', 'sheet_year', 'sheet_month', name='uq_market_egg_month_zone_period'),
+    )
+
+
+class MarketPoultryDaily(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Culls / broiler daily rates (manual now; future external API uses source='api')."""
+
+    __tablename__ = 'market_poultry_daily'
+
+    zone_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey('market_egg_zones.id', ondelete='CASCADE'), nullable=False, index=True
+    )
+    product: Mapped[str] = mapped_column(String(20), nullable=False)
+    rate_date: Mapped[date] = mapped_column(Date, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default='manual')
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    zone: Mapped[MarketEggZone] = relationship(back_populates='poultry_prices')
+
+    __table_args__ = (
+        UniqueConstraint('zone_id', 'product', 'rate_date', name='uq_market_poultry_daily'),
+        CheckConstraint("product IN ('culls', 'broilers')", name='ck_market_poultry_product'),
+        CheckConstraint("source IN ('manual', 'api')", name='ck_market_poultry_source'),
     )
 
 

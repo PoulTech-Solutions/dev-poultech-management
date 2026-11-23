@@ -1,23 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.market_errors import MarketDataUnavailableError, ProfileLocationRequiredError
+from app.core.constants import RoleName
+from app.core.exceptions import ConflictError, ForbiddenError
+from app.core.market_errors import MarketDataUnavailableError
 from app.core.redis_conn import get_redis
 from app.db.models.users import User
-from app.modules.market.calendar_util import list_recent_months
+from app.modules.market.calendar_util import list_recent_months, week_day_span, week_of_month
 from app.modules.market.necc_client import fetch_necc_sheet_html, parse_necc_html
-from app.modules.market.pricing_util import neighbor_on_sheet, spot_from_sheet
+from app.modules.market.pricing_util import latest_day_on_sheet, neighbor_on_sheet, spot_from_sheet
+from app.modules.market.products import MANUAL_PRODUCTS, POULTRY_PRODUCTS
 from app.modules.market.repository import MarketRepository
 from app.modules.market.schemas import (
+    ManualPoultryRateReadResponse,
+    ManualPoultryRateUpsertResponse,
     MarketCompareResponse,
+    MarketCoverageResponse,
     MarketDashboardMetadata,
     MarketDashboardResponse,
     MarketDayPrice,
@@ -32,11 +41,43 @@ from app.modules.market.schemas import (
 from app.modules.market.zones import (
     DEFAULT_FALLBACK_ZONE,
     resolve_zone_name,
+    state_label_for_zone,
     validate_zone_or_raise,
 )
 from app.modules.users.repository import UsersRepository
 
 log = structlog.get_logger()
+
+_REDIS_OP_TIMEOUT = 2.0
+
+
+async def _redis_get(key: str) -> str | None:
+    try:
+        return await asyncio.wait_for(get_redis().get(key), timeout=_REDIS_OP_TIMEOUT)
+    except (TimeoutError, OSError, ConnectionError) as exc:
+        log.warning('market_redis_get_skipped', key=key, error=str(exc))
+        return None
+
+
+async def _redis_set(key: str, value: str, *, ex: int) -> None:
+    try:
+        await asyncio.wait_for(get_redis().set(key, value, ex=ex), timeout=_REDIS_OP_TIMEOUT)
+    except (TimeoutError, OSError, ConnectionError) as exc:
+        log.warning('market_redis_set_skipped', key=key, error=str(exc))
+
+
+async def _redis_incr(key: str) -> None:
+    try:
+        await asyncio.wait_for(get_redis().incr(key), timeout=_REDIS_OP_TIMEOUT)
+    except (TimeoutError, OSError, ConnectionError) as exc:
+        log.warning('market_redis_incr_skipped', key=key, error=str(exc))
+
+
+async def _redis_delete(key: str) -> None:
+    try:
+        await asyncio.wait_for(get_redis().delete(key), timeout=_REDIS_OP_TIMEOUT)
+    except (TimeoutError, OSError, ConnectionError) as exc:
+        log.warning('market_redis_delete_skipped', key=key, error=str(exc))
 
 
 def _decimal_str(value: Decimal | float) -> str:
@@ -44,6 +85,11 @@ def _decimal_str(value: Decimal | float) -> str:
         rounded = value.quantize(Decimal('0.01'))
         return str(int(rounded)) if rounded == rounded.to_integral_value() else str(rounded)
     return str(round(float(value), 2))
+
+
+def _optional_price_str(value: Decimal | None) -> str:
+    """Empty string when NECC has no column yet (frontend shows N/A)."""
+    return _decimal_str(value) if value is not None else ''
 
 
 def _today_ist() -> date:
@@ -101,6 +147,7 @@ class MarketService:
         zones = [
             MarketZoneItem(
                 name=n,
+                state=state_label_for_zone(n),
                 today_value=today_map[n].value if n in today_map else None,
                 today_change=today_map[n].change if n in today_map else None,
             )
@@ -120,6 +167,27 @@ class MarketService:
             )
         return await self.compare(names)
 
+    async def egg_coverage(self, zone_name: str) -> MarketCoverageResponse:
+        known = set(await self._repo.list_zone_names())
+        if not known:
+            raise MarketDataUnavailableError('Egg rates have not been synced yet')
+        zone_name = validate_zone_or_raise(zone_name, known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        today = _today_ist()
+        since = date(today.year - 4, 1, 1)
+        grouped: dict[int, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
+        for year, month, day in await self._repo.published_dates_for_zone(zone.id, since=since):
+            grouped[year][month].add(day)
+        years = sorted(grouped, reverse=True)[:5]
+        months = {str(year): sorted(grouped[year]) for year in years}
+        weeks = {
+            f'{year}-{month:02d}': sorted({week_of_month(day) for day in days})
+            for year in years
+            for month, days in grouped[year].items()
+        }
+        return MarketCoverageResponse(zone=zone_name, years=years, months=months, weeks=weeks)
+
     async def egg_trend(
         self,
         zone_name: str,
@@ -127,6 +195,7 @@ class MarketService:
         *,
         year: int | None = None,
         month: int | None = None,
+        week: int | None = None,
     ) -> MarketTrendResponse:
         if window not in {'days', 'month', 'year'}:
             from app.core.exceptions import AppError
@@ -147,6 +216,7 @@ class MarketService:
 
         points: list[MarketTrendPoint] = []
         series: list[float]
+        trend_week: int | None = None
         if window == 'month':
             if not month_map:
                 raise MarketDataUnavailableError(
@@ -161,20 +231,38 @@ class MarketService:
                     )
                 )
         elif window == 'year':
-            year_rows = await self._repo.monthly_averages(zone.id, months=12)
+            year_rows = await self._repo.monthly_averages_for_year(zone.id, sheet_year)
             series = [float(avg) for _, _, avg in year_rows]
             for y, m, avg in year_rows:
                 points.append(MarketTrendPoint(date=f'{y}-{m:02d}', value=float(avg)))
         else:
-            history_days = 7
+            if not month_map:
+                raise MarketDataUnavailableError(
+                    f'No egg prices for {zone_name} in {sheet_year}-{sheet_month:02d}'
+                )
+            if week is not None:
+                from app.core.exceptions import AppError
+
+                try:
+                    start, end = week_day_span(sheet_year, sheet_month, week)
+                except ValueError as exc:
+                    raise AppError(str(exc), code='validation_error') from exc
+                trend_week = week
+            else:
+                start, end = 1, 31
+            days = [d for d in sorted(month_map) if start <= d <= end]
+            if week is None:
+                days = days[-7:]
             series = []
-            for offset in range(history_days - 1, -1, -1):
-                d = today - timedelta(days=offset)
-                p = await self._repo.price_on_date(zone.id, d)
-                if p is not None:
-                    val = float(p)
-                    series.append(val)
-                    points.append(MarketTrendPoint(date=d.isoformat(), value=val))
+            for day in days:
+                val = float(month_map[day])
+                series.append(val)
+                points.append(
+                    MarketTrendPoint(
+                        date=date(sheet_year, sheet_month, day).isoformat(),
+                        value=val,
+                    )
+                )
         if not series:
             raise MarketDataUnavailableError('No trend data for this window')
         return MarketTrendResponse(
@@ -182,8 +270,9 @@ class MarketService:
             window=window,
             series=series,
             points=points,
-            year=sheet_year if window == 'month' else None,
-            month=sheet_month if window == 'month' else None,
+            year=sheet_year,
+            month=sheet_month if window in {'days', 'month'} else None,
+            week=trend_week,
             sheet_average=_decimal_str(sheet_avg) if sheet_avg is not None else None,
         )
 
@@ -268,15 +357,138 @@ class MarketService:
             )
         return zone
 
+    async def upsert_manual_poultry_rates(
+        self,
+        *,
+        product: str,
+        zone_name: str,
+        today: Decimal | None,
+        yesterday: Decimal | None,
+        tomorrow: Decimal | None,
+        updated_by: uuid.UUID,
+        actor_role: str,
+    ) -> ManualPoultryRateUpsertResponse:
+        known = set(await self._repo.list_zone_names())
+        if not known:
+            raise MarketDataUnavailableError('No NECC zones in database')
+        zone_name = validate_zone_or_raise(zone_name.strip(), known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        today_d = _today_ist()
+        await self._repo.lock_poultry_channel(zone.id, product)
+        writes: list[tuple[date, Decimal]] = []
+        if today is not None:
+            writes.append((today_d, today))
+        if yesterday is not None:
+            writes.append((today_d - timedelta(days=1), yesterday))
+        if tomorrow is not None:
+            writes.append((today_d + timedelta(days=1), tomorrow))
+        for rate_date, price in writes:
+            await self._assert_poultry_writable(
+                zone_id=zone.id,
+                product=product,
+                rate_date=rate_date,
+                today_d=today_d,
+                actor_role=actor_role,
+            )
+            await self._repo.upsert_poultry_daily(
+                zone_id=zone.id,
+                product=product,
+                rate_date=rate_date,
+                price=price,
+                source='manual',
+                updated_by=updated_by,
+            )
+        try:
+            await self._db.commit()
+        except IntegrityError:
+            await self._db.rollback()
+            raise ConflictError(
+                'A rate for this city, product, and day already exists',
+                code='rate_conflict',
+            ) from None
+        await self._bump_rates_epoch()
+        read = await self.read_manual_poultry_rates(
+            product=product, zone_name=zone_name, actor_role=actor_role
+        )
+        return ManualPoultryRateUpsertResponse(
+            product=read.product,
+            zone=read.zone,
+            source=read.source,
+            today=read.today or (_decimal_str(today) if today is not None else ''),
+            yesterday=read.yesterday,
+            tomorrow=read.tomorrow,
+            today_source_date=read.today_source_date,
+            yesterday_source_date=read.yesterday_source_date,
+            today_carried=read.today_carried,
+            yesterday_carried=read.yesterday_carried,
+            today_editable=read.today_editable,
+            yesterday_editable=read.yesterday_editable,
+            tomorrow_editable=read.tomorrow_editable,
+        )
+
+    async def _assert_poultry_writable(
+        self,
+        *,
+        zone_id: uuid.UUID,
+        product: str,
+        rate_date: date,
+        today_d: date,
+        actor_role: str,
+    ) -> None:
+        if actor_role in {RoleName.ADMIN, RoleName.SUPER_ADMIN}:
+            return
+        if rate_date > today_d:
+            return
+        existing = await self._repo.poultry_price_on_date(zone_id, product, rate_date)
+        if existing is not None:
+            raise ForbiddenError(
+                'Staff cannot change yesterday or today once that day has a rate. Ask an admin.',
+                code='rate_locked',
+            )
+
+    async def read_manual_poultry_rates(
+        self, *, product: str, zone_name: str, actor_role: str = 'staff'
+    ) -> ManualPoultryRateReadResponse:
+        known = set(await self._repo.list_zone_names())
+        if not known:
+            raise MarketDataUnavailableError('No NECC zones in database')
+        zone_name = validate_zone_or_raise(zone_name.strip(), known)
+        zone = await self._repo.get_zone_by_name(zone_name)
+        assert zone is not None
+        today_d = _today_ist()
+        today_row = await self._repo.latest_poultry_on_or_before(zone.id, product, today_d)
+        yday = today_d - timedelta(days=1)
+        y_row = await self._repo.latest_poultry_on_or_before(zone.id, product, yday)
+        next_p = await self._repo.poultry_price_on_date(zone.id, product, today_d + timedelta(days=1))
+        today_exact = today_row is not None and today_row[0] == today_d
+        y_exact = y_row is not None and y_row[0] == yday
+        can_override = actor_role in {RoleName.ADMIN, RoleName.SUPER_ADMIN}
+        return ManualPoultryRateReadResponse(
+            product=product,
+            zone=zone_name,
+            source='manual',
+            today=_decimal_str(today_row[1]) if today_row else None,
+            yesterday=_decimal_str(y_row[1]) if y_row else None,
+            tomorrow=_decimal_str(next_p) if next_p is not None else None,
+            today_source_date=today_row[0].isoformat() if today_row else None,
+            yesterday_source_date=y_row[0].isoformat() if y_row else None,
+            today_carried=bool(today_row) and not today_exact,
+            yesterday_carried=bool(y_row) and not y_exact,
+            today_editable=can_override or not today_exact,
+            yesterday_editable=can_override or not y_exact,
+            tomorrow_editable=True,
+        )
+
     async def dashboard(
         self,
         user: User,
         *,
         zone_query: str | None = None,
     ) -> MarketDashboardResponse:
-        cache_key = self._cache_key(user.id, zone_query)
+        cache_key = await self._dashboard_cache_key(user.id, zone_query, user.profile)
         if self._settings.market_dashboard_cache_seconds > 0:
-            cached = await get_redis().get(cache_key)
+            cached = await _redis_get(cache_key)
             if cached:
                 return MarketDashboardResponse.model_validate_json(cached)
 
@@ -288,19 +500,6 @@ class MarketService:
             )
         known = set(names)
         profile = user.profile
-        if (
-            zone_query is None
-            and profile
-            and not profile.has_location_for_market()
-            and not (profile.market_preferred_zone and profile.market_preferred_zone in known)
-        ):
-            raise ProfileLocationRequiredError(
-                details=[
-                    {'field': 'pincode', 'message': 'Required'},
-                    {'field': 'state', 'message': 'Required'},
-                    {'field': 'district', 'message': 'Required'},
-                ]
-            )
         if zone_query is not None:
             selected = validate_zone_or_raise(zone_query.strip(), known)
             resolved = None
@@ -310,8 +509,10 @@ class MarketService:
             selected, resolved, match_status = resolve_zone_name(
                 preferred=preferred,
                 village_city=profile.village_city if profile else None,
+                tehsil=profile.tehsil if profile else None,
                 district=profile.district if profile else None,
                 state=profile.state if profile else None,
+                pincode=profile.pincode if profile else None,
                 known_zones=known,
                 fallback=self._settings.market_default_zone or DEFAULT_FALLBACK_ZONE,
             )
@@ -327,18 +528,18 @@ class MarketService:
                 details=[{'field': 'zone', 'message': selected}],
             )
 
-        try:
-            sheet_day, today_p, is_live_today = spot_from_sheet(month_map, today.day)
-        except ValueError:
+        today_p = month_map.get(today.day)
+        is_live_today = today_p is not None
+        latest = latest_day_on_sheet(month_map, through_day=today.day)
+        if today_p is None and latest is None:
             raise MarketDataUnavailableError(
                 'No egg prices on the current NECC sheet for this zone'
-            ) from None
-        price_as_of = date(today.year, today.month, sheet_day).isoformat()
-        prev_p = neighbor_on_sheet(month_map, sheet_day, -1)
-        if prev_p is None and sheet_day == 1:
-            yesterday = today - timedelta(days=1)
-            prev_p = await self._repo.price_on_date(zone.id, yesterday)
-        next_p = neighbor_on_sheet(month_map, sheet_day, 1)
+            )
+        price_as_of = date(today.year, today.month, today.day if is_live_today else latest).isoformat()
+        prev_p = month_map.get(today.day - 1)
+        if prev_p is None and today.day == 1:
+            prev_p = await self._repo.price_on_date(zone.id, today - timedelta(days=1))
+        next_p = month_map.get(today.day + 1)
 
         month_series = [float(month_map[d]) for d in sorted(month_map)]
         year_rows = await self._repo.monthly_averages(zone.id, months=12)
@@ -351,7 +552,9 @@ class MarketService:
             if p is not None:
                 history.append(float(p))
 
-        change = float(today_p - prev_p) if prev_p is not None else 0.0
+        change = (
+            float(today_p - prev_p) if today_p is not None and prev_p is not None else 0.0
+        )
         sync = await self._repo.latest_successful_sync()
         fetched_at = sync.finished_at.isoformat() if sync and sync.finished_at else None
         summary = await self._repo.month_summary(zone.id, today.year, today.month)
@@ -359,9 +562,14 @@ class MarketService:
         comp_avg = summary.computed_daily_average if summary else None
 
         rate = MarketRateCard(
-            value=_decimal_str(today_p),
-            previousValue=_decimal_str(prev_p) if prev_p is not None else _decimal_str(today_p),
-            nextValue=_decimal_str(next_p) if next_p is not None else _decimal_str(today_p),
+            id='eggs',
+            title='Eggs',
+            unit='per 100 eggs (NECC suggested)',
+            source='necc',
+            live=True,
+            value=_optional_price_str(today_p),
+            previousValue=_optional_price_str(prev_p),
+            nextValue=_optional_price_str(next_p),
             month=month_series,
             year=year_series,
             history=history or month_series[-7:],
@@ -369,6 +577,7 @@ class MarketService:
             month_average=_decimal_str(comp_avg) if comp_avg is not None else None,
             necc_sheet_average=_decimal_str(necc_avg) if necc_avg is not None else None,
         )
+        poultry_cards: list[MarketRateCard] = []
         ticker = [
             MarketTickerItem(
                 label='Egg rate',
@@ -377,6 +586,22 @@ class MarketService:
                 zone=selected,
             )
         ]
+        for product in sorted(MANUAL_PRODUCTS):
+            card = await self._poultry_rate_card(zone.id, product, selected, today)
+            if card is None:
+                continue
+            poultry_cards.append(card)
+            today_for_change = Decimal(card.value)
+            prev_for_change = Decimal(card.previousValue) if card.previousValue else today_for_change
+            ticker.append(
+                MarketTickerItem(
+                    label=POULTRY_PRODUCTS[product]['ticker_label'],
+                    value=card.value,
+                    change=round(float(today_for_change - prev_for_change), 2),
+                    zone=selected,
+                )
+            )
+        rates = [rate, *poultry_cards]
         meta = MarketDashboardMetadata(
             selected_zone=selected,
             resolved_zone=resolved,
@@ -387,9 +612,9 @@ class MarketService:
             price_as_of=price_as_of,
             is_live_today=is_live_today,
         )
-        body = MarketDashboardResponse(metadata=meta, rates=[rate], ticker=ticker)
+        body = MarketDashboardResponse(metadata=meta, rates=rates, ticker=ticker)
         if self._settings.market_dashboard_cache_seconds > 0:
-            await get_redis().set(
+            await _redis_set(
                 cache_key,
                 body.model_dump_json(),
                 ex=self._settings.market_dashboard_cache_seconds,
@@ -432,13 +657,108 @@ class MarketService:
         as_of = sync.finished_at.isoformat() if sync and sync.finished_at else None
         return MarketCompareResponse(zones=items, as_of=as_of)
 
-    def _cache_key(self, user_id: uuid.UUID, zone_query: str | None) -> str:
+    def _cache_key(
+        self,
+        user_id: uuid.UUID,
+        zone_query: str | None,
+        profile: object | None = None,
+    ) -> str:
         suffix = zone_query or 'profile'
-        return f'market:dash:{user_id}:{suffix}'
+        pin = getattr(profile, 'pincode', None) or ''
+        district = getattr(profile, 'district', None) or ''
+        preferred = getattr(profile, 'market_preferred_zone', None) or ''
+        return f'market:dash:{user_id}:{suffix}:{pin}:{district}:{preferred}'
+
+    async def _dashboard_cache_key(
+        self,
+        user_id: uuid.UUID,
+        zone_query: str | None,
+        profile: object | None = None,
+    ) -> str:
+        epoch = await self._rates_epoch()
+        return f'{self._cache_key(user_id, zone_query, profile)}:p{epoch}'
+
+    async def _rates_epoch(self) -> int:
+        raw = await _redis_get('market:poultry:epoch')
+        return int(raw) if raw else 0
+
+    async def _bump_rates_epoch(self) -> None:
+        await _redis_incr('market:poultry:epoch')
+
+    async def _poultry_rate_card(
+        self,
+        zone_id: uuid.UUID,
+        product: str,
+        zone_name: str,
+        today: date,
+    ) -> MarketRateCard | None:
+        meta = POULTRY_PRODUCTS[product]
+        since = today - timedelta(days=370)
+        daily_rows = await self._repo.poultry_prices_since(zone_id, product, since)
+        if not daily_rows:
+            return None
+
+        def carried(target: date) -> Decimal | None:
+            last: Decimal | None = None
+            for published, price in daily_rows:
+                if published > target:
+                    break
+                last = price
+            return last
+
+        today_p = carried(today)
+        if today_p is None:
+            return None
+        prev_p = carried(today - timedelta(days=1))
+        by_date = dict(daily_rows)
+        next_p = by_date.get(today + timedelta(days=1))
+        month_map = await self._repo.poultry_prices_for_month(zone_id, product, today.year, today.month)
+        month_series = [float(month_map[d]) for d in sorted(month_map)] if month_map else [float(today_p)]
+        year_series = _poultry_month_averages(daily_rows, today) or month_series[-12:]
+        history: list[float] = []
+        for offset in range(6, -1, -1):
+            p = carried(today - timedelta(days=offset))
+            if p is not None:
+                history.append(float(p))
+        if not history:
+            history = month_series[-7:] if len(month_series) >= 7 else month_series
+
+        return MarketRateCard(
+            id=meta['id'],
+            title=meta['title'],
+            unit=meta['unit'],
+            source='manual',
+            live=True,
+            value=_decimal_str(today_p),
+            previousValue=_optional_price_str(prev_p),
+            nextValue=_optional_price_str(next_p),
+            month=month_series,
+            year=year_series,
+            history=history,
+            zone=zone_name,
+        )
 
     async def _invalidate_dashboard_cache(self, user_id: uuid.UUID | None = None) -> None:
         if user_id:
-            await get_redis().delete(self._cache_key(user_id, None))
+            await _redis_delete(await self._dashboard_cache_key(user_id, None))
             return
-        # Best-effort pattern delete skipped: TTL covers full invalidation.
-        pass
+        try:
+            redis = get_redis()
+            async for key in redis.scan_iter(match='market:dash:*', count=100):
+                await asyncio.wait_for(redis.delete(key), timeout=_REDIS_OP_TIMEOUT)
+        except (TimeoutError, OSError, ConnectionError) as exc:
+            log.warning('market_redis_scan_delete_skipped', error=str(exc))
+
+
+def _poultry_month_averages(rows: list[tuple[date, Decimal]], anchor: date, count: int = 12) -> list[float]:
+    buckets: dict[tuple[int, int], list[Decimal]] = defaultdict(list)
+    for d, price in rows:
+        buckets[(d.year, d.month)].append(price)
+    series: list[float] = []
+    for year, month in reversed(list_recent_months(anchor, count)):
+        vals = buckets.get((year, month))
+        if vals:
+            series.append(float(sum(vals) / len(vals)))
+        elif series:
+            series.append(series[-1])
+    return series

@@ -26,7 +26,7 @@ from app.tests.conftest import (
 )
 
 
-async def test_signup_creates_unverified_user_and_challenges(client, seeded, db):
+async def test_signup_does_not_create_user_until_otp_verify(client, seeded, db):
     email = new_email()
     resp = await client.post(
         '/api/v1/auth/signup',
@@ -46,14 +46,8 @@ async def test_signup_creates_unverified_user_and_challenges(client, seeded, db)
     assert 'otp' not in body
     assert 'otp_session_id' in body
 
-    user = (await db.execute(select(User).where(User.email == email.lower()))).scalar_one()
-    assert user.is_email_verified is False
-    assert user.password_hash is not None
-    profile_row = select(UserProfile).where(UserProfile.user_id == user.id)
-    profile = (await db.execute(profile_row)).scalar_one_or_none()
-    assert profile is None, 'profile is persisted only after verify-email'
-    assert not user.password_hash.startswith(TEST_PASSWORD)
-    assert user.role.name == 'user'
+    user = (await db.execute(select(User).where(User.email == email.lower()))).scalar_one_or_none()
+    assert user is None, 'user row is created only after verify-email'
 
 
 async def test_signup_profile_created_only_after_email_verify(client, seeded, db):
@@ -71,22 +65,27 @@ async def test_signup_profile_created_only_after_email_verify(client, seeded, db
     )
     assert signup.status_code == 202
     sid = signup.json()['otp_session_id']
-    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
+    assert (await db.execute(select(User).where(User.email == email))).scalar_one_or_none() is None
 
-    assert (
-        await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))
-    ).scalar_one_or_none() is None
+    login_before = await client.post(
+        '/api/v1/auth/login', json={'email': email, 'password': TEST_PASSWORD}
+    )
+    assert login_before.status_code == 400
+    assert login_before.json()['error']['code'] == 'registration_required'
 
     otp = await read_otp('signup', sid)
     verified = await client.post(
         '/api/v1/auth/verify-email', json={'otp_session_id': sid, 'otp': otp, 'purpose': 'signup'}
     )
     assert verified.status_code == 200
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one()
     profile = (await db.execute(select(UserProfile).where(UserProfile.user_id == user.id))).scalar_one()
     assert profile.first_name == 'Ashish'
     assert profile.phone_e164 is not None
-    await db.refresh(user)
     assert user.is_email_verified is True
+    assert user.is_active is True
+    assert not user.password_hash.startswith(TEST_PASSWORD)
+    assert user.role.name == 'user'
 
 
 async def test_full_registration_then_first_signin(client, seeded):
@@ -441,6 +440,49 @@ async def test_reset_flow_sets_a_new_password(client, seeded):
     )
     assert reset.status_code == 200, reset.text
     assert (await login(client, account['email'], 'R3set!Pass'))['access_token']
+
+
+async def test_leftover_unverified_user_cannot_login_until_otp(client, seeded, db):
+    from app.core.security import hash_password_async
+    from app.db.models.roles import Role
+
+    email = new_email()
+    role = (await db.execute(select(Role).where(Role.name == 'user'))).scalar_one()
+    db.add(
+        User(
+            email=email,
+            password_hash=await hash_password_async(TEST_PASSWORD),
+            role_id=role.id,
+            is_active=True,
+            is_email_verified=False,
+        )
+    )
+    await db.commit()
+
+    blocked = await client.post('/api/v1/auth/login', json={'email': email, 'password': TEST_PASSWORD})
+    assert blocked.status_code == 400
+    assert blocked.json()['error']['code'] == 'email_not_verified'
+
+    signup = await client.post(
+        '/api/v1/auth/signup',
+        json={
+            'email': email,
+            'password': TEST_PASSWORD,
+            'confirm_password': TEST_PASSWORD,
+            'first_name': 'Ashish',
+            'last_name': 'Kumar',
+            'phone': TEST_PHONE,
+        },
+    )
+    assert signup.status_code == 202, signup.text
+    sid = signup.json()['otp_session_id']
+    otp = await read_otp('signup', sid)
+    verified = await client.post(
+        '/api/v1/auth/verify-email', json={'otp_session_id': sid, 'otp': otp, 'purpose': 'signup'}
+    )
+    assert verified.status_code == 200, verified.text
+    tokens = await login(client, email)
+    assert tokens['access_token']
 
 
 async def test_google_only_account_is_told_to_use_google(client, seeded, db):

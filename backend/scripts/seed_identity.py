@@ -45,6 +45,10 @@ PERMISSIONS: dict[str, tuple[str, tuple[str, ...]]] = {
         'Market rates and advisories (free for all logged in)',
         ('user', 'farm_owner', 'farm_member', 'staff', 'admin', 'super_admin'),
     ),
+    'market:rates:manage': (
+        'Update culls and broiler market rates (manual; API sync later)',
+        ('staff', 'admin', 'super_admin'),
+    ),
     'marketplace:read': (
         'Browse listings',
         ('user', 'farm_owner', 'farm_member', 'staff', 'admin', 'super_admin'),
@@ -62,7 +66,10 @@ PERMISSIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     'user:read:self': ('Read own profile', tuple(ROLES)),
     'user:write:self': ('Update own profile', tuple(ROLES)),
     'user:delete:self': ('Deactivate own account', ('farm_owner', 'user', 'admin', 'super_admin')),
-    'admin:users:read': ('List users (masked contact details)', ('admin', 'super_admin')),
+    'admin:users:read': (
+        'List directory (staff/admin see farmers; admin+ see staff)',
+        ('staff', 'admin', 'super_admin'),
+    ),
     'admin:users:manage': ('Change role, deactivate, reactivate', ('admin', 'super_admin')),
     'admin:roles:promote': ('Promote or demote an admin', ('super_admin',)),
 }

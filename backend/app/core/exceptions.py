@@ -83,6 +83,7 @@ _CONSTRAINT_MESSAGES = {
     'uq_user_sessions_one_active': ('session', 'This account is already signed in on another device'),
     'uq_user_sessions_refresh_token_hash': ('session', 'Session conflict, sign in again'),
     'ck_users_active_not_deleted': ('account', 'Reactivate your account to continue'),
+    'uq_market_poultry_daily': ('rate', 'A rate for this city, product, and day already exists'),
 }
 
 

@@ -27,6 +27,10 @@ LIMITS: dict[str, tuple[int, int]] = {
     'sessions:list': (60, 60),
     'market:read': (120, 60),
     'market:write': (30, 60),
+    'market:admin': (60, 60),
+    'geo:read': (90, 60),
+    'admin:read': (60, 60),
+    'admin:write': (30, 60),
 }
 
 

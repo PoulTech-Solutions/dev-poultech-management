@@ -57,12 +57,23 @@ tmp/
 temp/
 .cache/
 
+# --- Celery Beat local schedule (never commit) ---
+celerybeat-schedule
+celerybeat-schedule-*
+**/celerybeat-schedule
+**/celerybeat-schedule-*
+*.pid
+
 # --- Docker (local-only overrides) ---
 docker-compose.override.yml
 docker-compose.*.local.yml
 
 # --- Frontend (if present at repo root later) ---
 node_modules/
+
+# --- Local India Post dumps (imported into Postgres, not committed) ---
+dev-poultech-management/backend/data/*.csv
+backend/data/*.csv
 
 # --- Local DB dumps / backups ---
 *.dump

@@ -17,7 +17,9 @@ if TYPE_CHECKING:
 from app.core.config import get_settings
 from app.core.redis_conn import get_redis
 
-OtpPurpose = Literal['signup', 'login', 'reset', 'change_password', 'email_change', 'restore']
+OtpPurpose = Literal[
+    'signup', 'login', 'reset', 'change_password', 'email_change', 'restore', 'internal_signup'
+]
 RevocationReason = Literal[
     'logout',
     'password_change',

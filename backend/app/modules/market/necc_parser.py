@@ -11,7 +11,7 @@ _ROW_RE = re.compile(
     r"<tr[^>]*>\s*<td[^>]*align=['\"]left['\"][^>]*>([^<]+)</td>(.*?)</tr>",
     re.IGNORECASE | re.DOTALL,
 )
-_CELL_RE = re.compile(r"<td[^>]*>([^<]*)</td>", re.IGNORECASE)
+_CELL_RE = re.compile(r'<td[^>]*>([^<]*)</td>', re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)

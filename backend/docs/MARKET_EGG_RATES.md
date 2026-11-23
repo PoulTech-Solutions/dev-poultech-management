@@ -39,6 +39,7 @@ See **NECC_DATA_MAPPING.md** for NECC vs API field mapping.
 | GET | `/market/dashboard?zone=` | Bearer | Today / yesterday / tomorrow + month/year arrays + ticker |
 | PATCH | `/market/zone-preference` | Bearer | Save `market_preferred_zone` on profile |
 | GET | `/market/eggs/compare?zones=a,b` | Bearer | Today + delta for multiple cities |
+| PUT | `/market/admin/poultry-rates` | Bearer + `market:rates:manage` | Manual culls/broilers per hub (staff/admin) |
 
 Prices are **NECC suggested INR per 100 eggs** (`display_unit: per_100_eggs`). Disclaimer is in `metadata.disclaimer`.
 
@@ -57,12 +58,28 @@ If `/market/*` is missing, the API container is still on an older build — rebu
 
 ## Sync (scheduler — no NECC webhook)
 
-NECC does not expose push notifications or a fixed daily publish time. **Celery Beat** runs
-`app.tasks.market.sync_necc_egg_rates` on a cron (`MARKET_SYNC_CRON_MINUTE` / `MARKET_SYNC_CRON_HOUR`, UTC).
-Default: **every 3 hours**. Docker profile `app` includes a **beat** service plus **worker** on the `scheduled` queue.
+NECC does not expose push notifications. **Celery Beat** (timezone **Asia/Kolkata**) runs
+`app.tasks.market.sync_necc_egg_rates` once per day — default **02:00 IST**
+(`MARKET_SYNC_CRON_HOUR=2`, `MARKET_SYNC_CRON_MINUTE=0`).
+
+Each run **upserts** the last `MARKET_SYNC_MONTHS_BACK` month sheets (default 12). Older daily prices already
+in Postgres are kept; only changed/new days update. The mobile/web app **never** calls `e2necc` — graphs and
+yesterday/today/tomorrow cards read the database (optional Redis cache on `/market/dashboard`), so UI stays fast.
+
+Docker profile `app` includes **beat** + **worker** on the `scheduled` queue. After changing cron in `.env`, recreate beat:
+
+```powershell
+docker compose --profile app up -d --force-recreate beat
+```
 
 When today’s column is not on the sheet yet, APIs use the **latest published day** on the current month sheet
 (`metadata.price_as_of`, `metadata.is_live_today=false`) — not hardcoded prices.
+
+**First time / empty DB:** zones table has no rows until NECC sync runs. API startup triggers a background bootstrap when the table is empty (`MARKET_SYNC_ENABLED=true`). You can also run:
+
+```powershell
+docker compose exec api python -m scripts.sync_necc_egg_rates
+```
 
 Manual trigger (dev):
 
@@ -77,9 +94,33 @@ sync_necc_egg_rates.delay()
 |------|------|------|
 | `market_zone_not_found` | 404 | Unknown `zone` query |
 | `market_data_unavailable` | 503 | No sync data or missing today price |
-| `profile_location_required` | 403 | Dashboard without `?zone=` needs profile pincode+state+district |
+| `profile_location_required` | 403 | Unused for dashboard; missing address uses default/nearest hub (`match_status`) |
 | `market_sync_failed` | 502 | Reserved for admin refresh flows |
 
 ## Migrations
 
-Run `alembic upgrade head` for `c4e8a91b2f10` (zones/daily/sync) and `e7f2b3c94d21` (month summaries + `tehsil`).
+Run `alembic upgrade head` for `c4e8a91b2f10` (zones/daily/sync) and `e7f2b3c94d21` (month summaries + `tehsil`), then `f3a8b2c91d40` (`market_poultry_daily` for culls/broilers).
+
+**Dev Docker DB already has tables but no `alembic_version` row** (e.g. after manual or partial upgrades): stamp the last revision that matches the schema, then upgrade — do **not** run `upgrade` from empty:
+
+```powershell
+docker compose run --rm migrate alembic stamp a9c4e1f82b30
+docker compose run --rm migrate alembic upgrade head
+docker compose --profile app up -d --build api
+```
+
+## Culls & broilers (manual, same market location as eggs)
+
+Farmers do **not** pick a separate location type. Culls/broilers use the **same resolution path as eggs**:
+
+1. Profile **`pincode`** (geo reference) + **`state`** + **`district`** → `resolve_zone_name()`  
+2. Optional override **`market_preferred_zone`** (`PATCH /market/zone-preference`)  
+3. Dashboard `?zone=` for explicit hub (same as eggs)
+
+That resolves to one row in **`market_egg_zones`** (internal **market hub** / city key). Eggs attach NECC sync to that hub; culls/broilers attach manual or future API rows to the **same** `zone_id`. No per-pincode rate table.
+
+- Stored in `market_poultry_daily` with `product` `culls` | `broilers`, calendar `rate_date`, and `source` `manual` (future API sync uses `api`).
+- **`PUT /api/v1/market/admin/poultry-rates`** — requires JWT permission **`market:rates:manage`** (roles: `staff`, `admin`, `super_admin` only). Farmers stay read-only via dashboard.
+- Body: `product`, `zone` (hub name — same list as `GET /market/zones`), `today`, optional `yesterday` / `tomorrow` prices.
+- **`GET /api/v1/market/dashboard`** appends live `culls` and `broilers` rate cards + ticker rows when data exists for the user’s resolved hub.
+- After migrate, run `python scripts/seed_identity.py` inside the API container if `market:rates:manage` is missing on staff/admin roles.

@@ -1,4 +1,6 @@
 # One image, three entrypoints (api, worker, migrate) - see docker-compose.yml.
+# Rebuild this image when requirements.txt (or the base Python image) changes.
+# App Python is bind-mounted in compose with uvicorn --reload — do not rebuild for .py edits.
 # Avoid `# syntax=docker/dockerfile:1` on Desktop: the BuildKit frontend gRPC can drop mid-build.
 
 FROM python:3.13-slim

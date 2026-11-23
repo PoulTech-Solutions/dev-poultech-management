@@ -23,6 +23,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.exceptions import ConflictError, RateLimitError, UnauthorizedError
@@ -75,7 +76,11 @@ _PURPOSE_LABELS = {
     'change_password': 'confirm this change',
     'email_change': 'confirm your new email',
     'restore': 'reactivate your account',
+    'internal_signup': 'confirm your staff account',
 }
+
+# Redis OTP extra keys that must survive a resend (pending signup payload).
+_OTP_PENDING_KEYS = ('fn', 'ln', 'ph', 'pw', 'rl', 'cfm', 'p', 'ac')
 
 
 def mask_email(email: str) -> str:
@@ -115,6 +120,7 @@ class Issued:
     expires_in: int
     role: str
     must_verify_email: bool = False
+    cookie_max_age: int | None = None
 
 
 class AuthService:
@@ -264,52 +270,101 @@ class AuthService:
 
     # ---------------------------------------------------------------- signup
 
-    async def signup(self, payload: SignupRequest) -> Challenge:
-        if await self._repo.email_taken(payload.email):
-            raise ConflictError('Email is already registered', code='email_taken')
-        if await self._repo.phone_taken(payload.phone):
-            raise ConflictError('This mobile number is already in use', code='phone_taken')
+    async def _require_default_role(self):
         role = await self._repo.get_role_by_name(self._s.default_role_name)
         if role is None:
             log.critical('role_missing', role=self._s.default_role_name)
             raise AuthError(
-                'not_initialised', 'Server is not initialised: run scripts/seed_roles.py.', status=500
+                'not_initialised',
+                'Server is not initialised: run `python -m scripts.seed_identity` after migrations.',
+                status=500,
             )
-        # User + password only until email OTP is verified; profile rows are created in verify_signup.
-        user = await self._repo.create_user(
-            email=payload.email,
-            password_hash=await hash_password_async(payload.password),
-            role=role,
-        )
-        await self._db.commit()
-        log.info('user_signup', user_id=str(user.id), role=role.name)
+        return role
+
+    async def signup(self, payload: SignupRequest) -> Challenge:
+        """Send the email OTP only. User + profile rows are created in verify_signup."""
+        existing = await self._repo.get_by_email_any(payload.email)
+        if existing is not None and (existing.deleted_at is not None or existing.is_email_verified):
+            raise ConflictError('Email is already registered', code='email_taken')
+
+        exclude_id = existing.id if existing is not None else None
+        if await self._repo.phone_taken(payload.phone, exclude_user_id=exclude_id):
+            raise ConflictError('This mobile number is already in use', code='phone_taken')
+
+        role = await self._require_default_role()
+        extra = {
+            'fn': payload.first_name,
+            'ln': payload.last_name,
+            'ph': payload.phone,
+            'rl': role.name,
+        }
+        if existing is not None:
+            # Leftover unverified row from the old flow: keep the email claim,
+            # replace the password, and do not treat it as a live account.
+            existing.password_hash = await hash_password_async(payload.password)
+            existing.is_active = False
+            existing.is_email_verified = False
+            await self._db.commit()
+            log.info('signup_otp_reissued', user_id=str(existing.id))
+            return await self._issue_challenge(
+                user=existing,
+                email=payload.email,
+                purpose='signup',
+                display_name=payload.first_name,
+                extra=extra,
+            )
+
+        extra['pw'] = await hash_password_async(payload.password)
+        log.info('signup_otp_pending', email_masked=mask_email(payload.email))
         return await self._issue_challenge(
-            user=user,
+            user=None,
             email=payload.email,
             purpose='signup',
             display_name=payload.first_name,
-            extra={
-                'fn': payload.first_name,
-                'ln': payload.last_name,
-                'ph': payload.phone,
-            },
+            extra=extra,
         )
 
     async def verify_signup(self, payload: OtpVerifyRequest) -> None:
         state = await self._challenge_state(sid=payload.otp_session_id, purpose='signup')
-        user = await self._repo.get_by_id(uuid.UUID(state['u'])) if state.get('u') else None
-        if user is None:
-            raise AuthError('signup_expired', 'Start sign-up again.', status=410)
         first_name = state.get('fn', '').strip()
         last_name = state.get('ln', '').strip()
         phone = state.get('ph', '').strip()
         if not first_name or not last_name or not phone:
             raise AuthError('signup_expired', 'Start sign-up again.', status=410)
-        if await self._repo.phone_taken(phone):
+
+        leftover = await self._repo.get_by_id(uuid.UUID(state['u'])) if state.get('u') else None
+        if await self._repo.phone_taken(phone, exclude_user_id=leftover.id if leftover else None):
             raise ConflictError('This mobile number is already in use', code='phone_taken')
+
         await self._consume(
             sid=payload.otp_session_id, purpose='signup', otp=payload.otp, identity=state.get('id', '')
         )
+
+        user = leftover
+        if user is None:
+            role_name = state.get('rl') or self._s.default_role_name
+            role = await self._repo.get_role_by_name(role_name)
+            if role is None:
+                raise AuthError(
+                    'not_initialised',
+                    'Server is not initialised: run `python -m scripts.seed_identity` after migrations.',
+                    status=500,
+                )
+            password_hash = state.get('pw', '')
+            if not password_hash:
+                raise AuthError('signup_expired', 'Start sign-up again.', status=410)
+            try:
+                user = await self._repo.create_user(
+                    email=state.get('id', ''),
+                    password_hash=password_hash,
+                    role=role,
+                    is_active=True,
+                    is_email_verified=True,
+                )
+            except IntegrityError:
+                await self._db.rollback()
+                raise ConflictError('Email is already registered', code='email_taken') from None
+
         await self._repo.upsert_profile(
             user_id=user.id,
             first_name=first_name,
@@ -323,6 +378,28 @@ class AuthService:
         # is the next step. Auto-login would occupy the one device slot and make the
         # user's first real sign-in look like a conflict.
         log.info('email_verified', user_id=str(user.id))
+
+    async def issue_internal_signup(
+        self, *, email: str, extra: dict[str, str], display_name: str
+    ) -> Challenge:
+        """OTP to the employee mailbox. Rows are created only after confirm."""
+        return await self._issue_challenge(
+            user=None,
+            email=email,
+            purpose='internal_signup',
+            extra=extra,
+            display_name=display_name,
+        )
+
+    async def consume_internal_signup(self, payload: OtpVerifyRequest) -> dict[str, str]:
+        purpose: OtpPurpose = 'internal_signup'
+        if payload.purpose != 'internal_signup':
+            raise AuthError('otp_invalid', 'Start this registration again.')
+        state = await self._challenge_state(sid=payload.otp_session_id, purpose=purpose)
+        await self._consume(
+            sid=payload.otp_session_id, purpose=purpose, otp=payload.otp, identity=state.get('id', '')
+        )
+        return state
 
     # -------------------------------------------------------------- log in
 
@@ -354,11 +431,17 @@ class AuthService:
                 'Your account is deactivated. Use "Reactivate account" to restore it.',
                 status=403,
             )
-        if not user.is_active:
+        if not user.is_email_verified:
             raise AuthError(
                 'email_not_verified',
                 'This email is registered but not verified. Open the signup message in your inbox, '
                 'or register again with a valid email you can access.',
+            )
+        if not user.is_active:
+            raise AuthError(
+                'account_inactive',
+                'This account is deactivated. Use "Reactivate account" to restore it, or contact support.',
+                status=403,
             )
         if user.locked_until and user.locked_until > datetime.now(UTC):
             wait = max(int((user.locked_until - datetime.now(UTC)).total_seconds()), 1)
@@ -393,6 +476,12 @@ class AuthService:
         user = await self._repo.get_by_id(uuid.UUID(state['u'])) if state.get('u') else None
         if user is None:
             raise AuthError('otp_expired', 'Start again to get a new code.', status=410)
+        if not user.is_email_verified or not user.is_active:
+            raise AuthError(
+                'email_not_verified',
+                'This email is registered but not verified. Open the signup message in your inbox, '
+                'or register again with a valid email you can access.',
+            )
         await self._consume(
             sid=payload.otp_session_id, purpose='login', otp=payload.otp, identity=state.get('id', '')
         )
@@ -434,8 +523,14 @@ class AuthService:
         if not email:
             raise AuthError('otp_expired', 'Start again to get a new code.', status=410)
         user = await self._repo.get_by_email_any(email)
+        extra = {key: state[key] for key in _OTP_PENDING_KEYS if state.get(key)}
         return await self._issue_challenge(
-            user=user, email=email, purpose=purpose, resend=True, session_id=payload.otp_session_id
+            user=user,
+            email=email,
+            purpose=purpose,
+            resend=True,
+            session_id=payload.otp_session_id,
+            extra=extra or None,
         )
 
     async def _register_failure(self, user: User, request: Request) -> None:
@@ -483,6 +578,7 @@ class AuthService:
         await self._db.commit()
 
         token, perms = self._mint(user, session)
+        remaining = int((session.expires_at - datetime.now(UTC)).total_seconds())
         await warm_session_caches(
             session_id=str(session.id),
             user_id=str(user.id),
@@ -502,6 +598,7 @@ class AuthService:
             expires_in=self._s.access_token_seconds,
             role=user.role.name,
             must_verify_email=not user.is_email_verified,
+            cookie_max_age=max(remaining, 1),
         )
 
     @staticmethod
@@ -560,6 +657,7 @@ class AuthService:
             token_version=user.token_version,
             profile=profile_snapshot(user),
         )
+        remaining = int((session.expires_at - now).total_seconds())
         return Issued(
             access_token=token,
             refresh_token=refresh_new,
@@ -567,6 +665,7 @@ class AuthService:
             expires_in=self._s.access_token_seconds,
             role=user.role.name,
             must_verify_email=not user.is_email_verified,
+            cookie_max_age=max(remaining, 1),
         )
 
     async def _find_session_for_refresh(self, token_hash: str):
@@ -756,10 +855,11 @@ class AuthService:
             body.update(extra)
         response = JSONResponse(body, status_code=status_code)
         if issued.refresh_token:
+            max_age = issued.cookie_max_age or (self._s.refresh_token_days * 86400)
             response.set_cookie(
                 self._s.refresh_cookie_name,
                 issued.refresh_token,
-                max_age=self._s.refresh_token_days * 86400,
+                max_age=max_age,
                 httponly=True,
                 secure=self._s.is_prod,
                 samesite=self._s.refresh_cookie_samesite,

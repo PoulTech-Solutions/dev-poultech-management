@@ -25,5 +25,12 @@ def spot_from_sheet(
 
 
 def neighbor_on_sheet(month_map: dict[int, Decimal], sheet_day: int, offset: int) -> Decimal | None:
-    target = sheet_day + offset
-    return month_map.get(target)
+    """Next/previous *published* NECC day (skips blank calendar days)."""
+    if offset == 0:
+        return month_map.get(sheet_day)
+    published = sorted(month_map)
+    if offset < 0:
+        earlier = [day for day in published if day < sheet_day]
+        return month_map[earlier[-1]] if earlier else None
+    later = [day for day in published if day > sheet_day]
+    return month_map[later[0]] if later else None

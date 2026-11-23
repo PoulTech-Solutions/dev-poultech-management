@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Live HTTP checks against :8000 using real NECC rows in Postgres (not pytest seeds)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +29,7 @@ PROFILE_PATCH = {
 
 
 def bearer(tokens: dict) -> dict:
-    return {'Authorization': f"Bearer {tokens['access_token']}"}
+    return {'Authorization': f'Bearer {tokens["access_token"]}'}
 
 
 def new_email(prefix: str = 'market-live') -> str:
@@ -105,10 +106,25 @@ async def _main() -> int:
             ('dashboard-chittoor', 'GET', '/api/v1/market/dashboard', {'zone': 'Chittoor'}),
             ('cities-today', 'GET', '/api/v1/market/eggs/cities-today', None),
             ('trend-days-pune', 'GET', '/api/v1/market/eggs/trend', {'zone': 'Pune', 'window': 'days'}),
-            ('trend-month-oct', 'GET', '/api/v1/market/eggs/trend', {'zone': 'Pune', 'window': 'month', 'year': '2026', 'month': '10'}),
+            (
+                'trend-month-oct',
+                'GET',
+                '/api/v1/market/eggs/trend',
+                {'zone': 'Pune', 'window': 'month', 'year': '2026', 'month': '10'},
+            ),
             ('trend-year', 'GET', '/api/v1/market/eggs/trend', {'zone': 'Mumbai (CC)', 'window': 'year'}),
-            ('sheet-nov-pune', 'GET', '/api/v1/market/eggs/sheet', {'zone': 'Pune', 'year': '2026', 'month': '11'}),
-            ('sheet-oct-ahm', 'GET', '/api/v1/market/eggs/sheet', {'zone': 'Ahmedabad', 'year': '2026', 'month': '10'}),
+            (
+                'sheet-nov-pune',
+                'GET',
+                '/api/v1/market/eggs/sheet',
+                {'zone': 'Pune', 'year': '2026', 'month': '11'},
+            ),
+            (
+                'sheet-oct-ahm',
+                'GET',
+                '/api/v1/market/eggs/sheet',
+                {'zone': 'Ahmedabad', 'year': '2026', 'month': '10'},
+            ),
             (
                 'compare-multi',
                 'GET',
@@ -119,13 +135,17 @@ async def _main() -> int:
         summary: list[tuple[str, int, str]] = []
         for title, method, path, params in cases:
             r = await client.request(method, path, params=params, headers=hdr)
-            body = r.json() if r.headers.get('content-type', '').startswith('application/json') else {'raw': r.text}
+            body = (
+                r.json()
+                if r.headers.get('content-type', '').startswith('application/json')
+                else {'raw': r.text}
+            )
             _print_case(title, method, path, params=params, status=r.status_code, body=body)
             note = ''
             if title == 'cities-today' and r.status_code == 200:
-                note = f"{len(body.get('zones', []))} cities"
+                note = f'{len(body.get("zones", []))} cities'
             elif title == 'dashboard-ahmedabad' and r.status_code == 200:
-                note = f"value={body['rates'][0]['value']} as_of={body['metadata'].get('price_as_of')}"
+                note = f'value={body["rates"][0]["value"]} as_of={body["metadata"].get("price_as_of")}'
             summary.append((title, r.status_code, note))
 
         print('\n=== SUMMARY ===')

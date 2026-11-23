@@ -35,6 +35,9 @@ from sqlalchemy.pool import NullPool
 TEST_PASSWORD = 'Str0ng!Pass1'
 TEST_PHONE = '9876543210'
 _TABLES = (
+    'geo_offices',
+    'geo_pincodes',
+    'market_poultry_daily',
     'market_egg_daily',
     'market_egg_month_summaries',
     'market_sync_runs',
@@ -98,6 +101,14 @@ def test_engine():
     from app.db.base import Base
 
     settings = get_settings()
+    from sqlalchemy import make_url
+
+    db_name = make_url(settings.database_url).database or ''
+    if db_name in {'poultech_dev', 'poultech', 'postgres'} or db_name.endswith('_dev'):
+        pytest.exit(
+            f'refusing to drop {db_name!r}. Point TEST_DATABASE_URL at poultech_test; '
+            'do not inherit DATABASE_URL from compose .env.'
+        )
     _create_database_if_missing(settings.database_url)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
 
@@ -122,6 +133,25 @@ async def db(test_engine) -> AsyncIterator[AsyncSession]:
     session_module.SessionLocal = async_sessionmaker(test_engine, expire_on_commit=False)
     async with test_engine.begin() as conn:
         await conn.execute(text(f'TRUNCATE {", ".join(_TABLES)} RESTART IDENTITY CASCADE'))
+        await conn.execute(
+            text(
+                """
+                INSERT INTO geo_pincodes (pincode, state, district, tehsil) VALUES
+                ('411001', 'Maharashtra', 'Pune', 'Pune'),
+                ('600001', 'Tamil Nadu', 'Chennai', 'Chennai'),
+                ('110001', 'Delhi', 'New Delhi', 'Connaught Place')
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO geo_offices (id, pincode, name, office_type, taluk) VALUES
+                (gen_random_uuid(), '411001', 'Pune GPO', 'HO', 'Pune'),
+                (gen_random_uuid(), '411001', 'Shivajinagar BO', 'BO', 'Haveli')
+                """
+            )
+        )
     maker = async_sessionmaker(test_engine, expire_on_commit=False)
     async with maker() as session:
         yield session

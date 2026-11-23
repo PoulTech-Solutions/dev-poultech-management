@@ -12,3 +12,6 @@ keys
 venv
 docker-compose.yml
 Dockerfile
+celerybeat-schedule
+celerybeat-schedule-*
+*.pid

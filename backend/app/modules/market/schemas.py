@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from decimal import Decimal
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.modules.market.zones import necc_disclaimer
 
@@ -17,6 +20,7 @@ class MarketZoneItem(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     name: str
+    state: str | None = None
     today_value: str | None = None
     today_change: float | None = None
 
@@ -106,7 +110,19 @@ class MarketTrendResponse(BaseModel):
     points: list[MarketTrendPoint]
     year: int | None = None
     month: int | None = None
+    week: int | None = None
     sheet_average: str | None = None
+
+
+class MarketCoverageResponse(BaseModel):
+    """Years → months → weeks that already exist in Postgres for one hub."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    zone: str
+    years: list[int]
+    months: dict[str, list[int]]
+    weeks: dict[str, list[int]]
 
 
 class MarketDayPrice(BaseModel):
@@ -115,6 +131,63 @@ class MarketDayPrice(BaseModel):
     day: int
     date: str
     price: str | None
+
+
+class ManualPoultryRateUpsertRequest(_StrictModel):
+    product: Literal['culls', 'broilers']
+    zone: str = Field(min_length=1, max_length=120)
+    today: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    yesterday: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    tomorrow: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+
+    @field_validator('today', 'yesterday', 'tomorrow', mode='before')
+    @classmethod
+    def _coerce_decimal(cls, v):
+        if v is None or v == '':
+            return None
+        return Decimal(str(v))
+
+    @model_validator(mode='after')
+    def _one_day(self) -> ManualPoultryRateUpsertRequest:
+        if self.today is None and self.yesterday is None and self.tomorrow is None:
+            raise ValueError('Provide at least one of today, yesterday, tomorrow')
+        return self
+
+
+class ManualPoultryRateUpsertResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    product: str
+    zone: str
+    source: str = 'manual'
+    today: str
+    yesterday: str | None
+    tomorrow: str | None
+    today_source_date: str | None = None
+    yesterday_source_date: str | None = None
+    today_carried: bool = False
+    yesterday_carried: bool = False
+    today_editable: bool = True
+    yesterday_editable: bool = True
+    tomorrow_editable: bool = True
+
+
+class ManualPoultryRateReadResponse(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    product: str
+    zone: str
+    source: str = 'manual'
+    today: str | None
+    yesterday: str | None
+    tomorrow: str | None
+    today_source_date: str | None = None
+    yesterday_source_date: str | None = None
+    today_carried: bool = False
+    yesterday_carried: bool = False
+    today_editable: bool = True
+    yesterday_editable: bool = True
+    tomorrow_editable: bool = True
 
 
 class MarketEggSheetResponse(BaseModel):
