@@ -139,6 +139,7 @@ class ManualPoultryRateUpsertRequest(_StrictModel):
     today: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     yesterday: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     tomorrow: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    apply_all_zones: bool = False
 
     @field_validator('today', 'yesterday', 'tomorrow', mode='before')
     @classmethod
@@ -170,6 +171,8 @@ class ManualPoultryRateUpsertResponse(BaseModel):
     today_editable: bool = True
     yesterday_editable: bool = True
     tomorrow_editable: bool = True
+    zones_updated: int = 1
+    apply_all_zones: bool = False
 
 
 class ManualPoultryRateReadResponse(BaseModel):

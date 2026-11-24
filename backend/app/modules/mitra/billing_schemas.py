@@ -243,3 +243,69 @@ class ProfitSummaryResponse(BaseModel):
     to_receive_inr: Decimal
     to_pay_inr: Decimal
 
+
+class MitraDashboardFarmCard(BaseModel):
+    """One farm row for the owner dashboard (rollups + identity)."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    unit_id: uuid.UUID
+    unit_name: str
+    farm_type: str
+    state: str | None = None
+    district: str | None = None
+    income_inr: Decimal
+    expenses_inr: Decimal
+    profit_inr: Decimal
+    to_receive_inr: Decimal
+    to_pay_inr: Decimal
+    units_sold: Decimal
+    sale_count: int
+    expense_count: int
+
+
+class MitraDashboardRecentSale(BaseModel):
+    """Recent sale line with farm context for the dashboard feed."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    id: uuid.UUID
+    unit_id: uuid.UUID
+    unit_name: str
+    farm_type: str
+    invoice_no: str
+    sale_date: date
+    buyer: str
+    item: str
+    quantity: Decimal
+    qty_unit: str
+    amount_inr: Decimal
+    received_inr: Decimal
+    balance_inr: Decimal
+
+
+class MitraDashboardTotals(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    farm_count: int
+    sale_count: int
+    expense_count: int
+    income_inr: Decimal
+    expenses_inr: Decimal
+    profit_inr: Decimal
+    to_receive_inr: Decimal
+    to_pay_inr: Decimal
+    units_sold: Decimal
+
+
+class MitraDashboardResponse(BaseModel):
+    """Owner-wide Mitra dashboard: all farms + sales rollups in one response."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    from_date: date | None
+    to_date: date | None
+    totals: MitraDashboardTotals
+    farms: list[MitraDashboardFarmCard]
+    recent_sales: list[MitraDashboardRecentSale]
+

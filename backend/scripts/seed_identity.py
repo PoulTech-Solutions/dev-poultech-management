@@ -73,6 +73,7 @@ PERMISSIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
     'admin:users:manage': ('Change role, deactivate, reactivate', ('admin', 'super_admin')),
     'admin:roles:promote': ('Promote or demote an admin', ('super_admin',)),
+    'admin:mitra:read': ('Platform Mitra farms and sales', ('admin', 'super_admin')),
 }
 
 

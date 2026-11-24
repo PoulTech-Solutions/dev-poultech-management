@@ -16,6 +16,7 @@ from app.db.models.mitra import (
     MitraHatcheryBatch,
     MitraUnitBillingSettings,
 )
+from app.db.models.users import User
 
 _MITRA_UNIT_CAP_LOCK_NS = 'mitra_unit_cap'
 
@@ -338,3 +339,229 @@ class MitraRepository:
         self.db.add(row)
         await self.db.flush()
         return row
+
+    async def owner_dashboard_by_unit(
+        self,
+        owner_user_id: uuid.UUID,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> list[dict]:
+        """Per-farm income/expense rollups for the owner dashboard."""
+        units = await self.list_units(owner_user_id)
+        if not units:
+            return []
+
+        unit_ids = [u.id for u in units]
+        sale_filters = [MitraBillingSale.unit_id.in_(unit_ids)]
+        exp_filters = [MitraExpense.unit_id.in_(unit_ids)]
+        if from_date is not None:
+            sale_filters.append(MitraBillingSale.sale_date >= from_date)
+            exp_filters.append(MitraExpense.expense_date >= from_date)
+        if to_date is not None:
+            sale_filters.append(MitraBillingSale.sale_date <= to_date)
+            exp_filters.append(MitraExpense.expense_date <= to_date)
+
+        sale_rows = (
+            await self.db.execute(
+                select(
+                    MitraBillingSale.unit_id,
+                    func.count().label('sale_count'),
+                    func.coalesce(func.sum(MitraBillingSale.amount_inr), 0).label('income_inr'),
+                    func.coalesce(func.sum(MitraBillingSale.balance_inr), 0).label('to_receive_inr'),
+                    func.coalesce(func.sum(MitraBillingSale.quantity), 0).label('units_sold'),
+                )
+                .where(*sale_filters)
+                .group_by(MitraBillingSale.unit_id)
+            )
+        ).all()
+        sale_map = {row.unit_id: row for row in sale_rows}
+
+        exp_rows = (
+            await self.db.execute(
+                select(
+                    MitraExpense.unit_id,
+                    func.count().label('expense_count'),
+                    func.coalesce(func.sum(MitraExpense.amount_inr), 0).label('expenses_inr'),
+                    func.coalesce(func.sum(MitraExpense.balance_inr), 0).label('to_pay_inr'),
+                )
+                .where(*exp_filters)
+                .group_by(MitraExpense.unit_id)
+            )
+        ).all()
+        exp_map = {row.unit_id: row for row in exp_rows}
+
+        cards: list[dict] = []
+        for unit in units:
+            sale = sale_map.get(unit.id)
+            exp = exp_map.get(unit.id)
+            income = Decimal(str(sale.income_inr)) if sale else Decimal('0')
+            expenses = Decimal(str(exp.expenses_inr)) if exp else Decimal('0')
+            cards.append(
+                {
+                    'unit_id': unit.id,
+                    'unit_name': unit.name,
+                    'farm_type': unit.farm_type,
+                    'state': unit.state,
+                    'district': unit.district,
+                    'income_inr': income,
+                    'expenses_inr': expenses,
+                    'profit_inr': income - expenses,
+                    'to_receive_inr': Decimal(str(sale.to_receive_inr)) if sale else Decimal('0'),
+                    'to_pay_inr': Decimal(str(exp.to_pay_inr)) if exp else Decimal('0'),
+                    'units_sold': Decimal(str(sale.units_sold)) if sale else Decimal('0'),
+                    'sale_count': int(sale.sale_count) if sale else 0,
+                    'expense_count': int(exp.expense_count) if exp else 0,
+                }
+            )
+        return cards
+
+    async def owner_recent_sales(
+        self,
+        owner_user_id: uuid.UUID,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        limit: int = 20,
+    ) -> list[tuple[MitraBillingSale, MitraFarmUnit]]:
+        """Latest sale lines across all of the owner's farms."""
+        filters = [
+            MitraFarmUnit.owner_user_id == owner_user_id,
+            MitraFarmUnit.deleted_at.is_(None),
+        ]
+        if from_date is not None:
+            filters.append(MitraBillingSale.sale_date >= from_date)
+        if to_date is not None:
+            filters.append(MitraBillingSale.sale_date <= to_date)
+        stmt = (
+            select(MitraBillingSale, MitraFarmUnit)
+            .join(MitraFarmUnit, MitraFarmUnit.id == MitraBillingSale.unit_id)
+            .where(*filters)
+            .order_by(MitraBillingSale.sale_date.desc(), MitraBillingSale.created_at.desc())
+            .limit(limit)
+        )
+        return list((await self.db.execute(stmt)).all())
+
+    async def admin_dashboard_by_unit(
+        self,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> list[dict]:
+        """Per-farm rollups across every non-deleted Mitra unit (admin dashboard)."""
+        unit_rows = (
+            await self.db.execute(
+                select(MitraFarmUnit, User.email)
+                .join(User, User.id == MitraFarmUnit.owner_user_id)
+                .where(MitraFarmUnit.deleted_at.is_(None))
+                .order_by(MitraFarmUnit.created_at.asc())
+            )
+        ).all()
+        if not unit_rows:
+            return []
+
+        unit_ids = [unit.id for unit, _email in unit_rows]
+        sale_filters = [MitraBillingSale.unit_id.in_(unit_ids)]
+        exp_filters = [MitraExpense.unit_id.in_(unit_ids)]
+        if from_date is not None:
+            sale_filters.append(MitraBillingSale.sale_date >= from_date)
+            exp_filters.append(MitraExpense.expense_date >= from_date)
+        if to_date is not None:
+            sale_filters.append(MitraBillingSale.sale_date <= to_date)
+            exp_filters.append(MitraExpense.expense_date <= to_date)
+
+        sale_rows = (
+            await self.db.execute(
+                select(
+                    MitraBillingSale.unit_id,
+                    func.count().label('sale_count'),
+                    func.coalesce(func.sum(MitraBillingSale.amount_inr), 0).label('income_inr'),
+                    func.coalesce(func.sum(MitraBillingSale.balance_inr), 0).label('to_receive_inr'),
+                    func.coalesce(func.sum(MitraBillingSale.quantity), 0).label('units_sold'),
+                )
+                .where(*sale_filters)
+                .group_by(MitraBillingSale.unit_id)
+            )
+        ).all()
+        sale_map = {row.unit_id: row for row in sale_rows}
+
+        exp_rows = (
+            await self.db.execute(
+                select(
+                    MitraExpense.unit_id,
+                    func.count().label('expense_count'),
+                    func.coalesce(func.sum(MitraExpense.amount_inr), 0).label('expenses_inr'),
+                    func.coalesce(func.sum(MitraExpense.balance_inr), 0).label('to_pay_inr'),
+                )
+                .where(*exp_filters)
+                .group_by(MitraExpense.unit_id)
+            )
+        ).all()
+        exp_map = {row.unit_id: row for row in exp_rows}
+
+        cards: list[dict] = []
+        for unit, owner_email in unit_rows:
+            sale = sale_map.get(unit.id)
+            exp = exp_map.get(unit.id)
+            income = Decimal(str(sale.income_inr)) if sale else Decimal('0')
+            expenses = Decimal(str(exp.expenses_inr)) if exp else Decimal('0')
+            cards.append(
+                {
+                    'unit_id': unit.id,
+                    'unit_name': unit.name,
+                    'farm_type': unit.farm_type,
+                    'state': unit.state,
+                    'district': unit.district,
+                    'owner_user_id': unit.owner_user_id,
+                    'owner_email': owner_email,
+                    'income_inr': income,
+                    'expenses_inr': expenses,
+                    'profit_inr': income - expenses,
+                    'to_receive_inr': Decimal(str(sale.to_receive_inr)) if sale else Decimal('0'),
+                    'to_pay_inr': Decimal(str(exp.to_pay_inr)) if exp else Decimal('0'),
+                    'units_sold': Decimal(str(sale.units_sold)) if sale else Decimal('0'),
+                    'sale_count': int(sale.sale_count) if sale else 0,
+                    'expense_count': int(exp.expense_count) if exp else 0,
+                }
+            )
+        return cards
+
+    async def admin_sales_by_unit(
+        self,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        sales_limit: int = 50,
+    ) -> dict[uuid.UUID, list[MitraBillingSale]]:
+        """Latest sales per farm (windowed), capped at ``sales_limit`` lines each."""
+        filters = [MitraFarmUnit.deleted_at.is_(None)]
+        if from_date is not None:
+            filters.append(MitraBillingSale.sale_date >= from_date)
+        if to_date is not None:
+            filters.append(MitraBillingSale.sale_date <= to_date)
+
+        rn = func.row_number().over(
+            partition_by=MitraBillingSale.unit_id,
+            order_by=(MitraBillingSale.sale_date.desc(), MitraBillingSale.created_at.desc()),
+        ).label('rn')
+        ranked = (
+            select(MitraBillingSale.id.label('sale_id'), rn)
+            .join(MitraFarmUnit, MitraFarmUnit.id == MitraBillingSale.unit_id)
+            .where(*filters)
+            .subquery()
+        )
+        stmt = (
+            select(MitraBillingSale)
+            .join(ranked, MitraBillingSale.id == ranked.c.sale_id)
+            .where(ranked.c.rn <= sales_limit)
+            .order_by(
+                MitraBillingSale.unit_id.asc(),
+                MitraBillingSale.sale_date.desc(),
+                MitraBillingSale.created_at.desc(),
+            )
+        )
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        grouped: dict[uuid.UUID, list[MitraBillingSale]] = {}
+        for sale in rows:
+            grouped.setdefault(sale.unit_id, []).append(sale)
+        return grouped

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import uuid
+from datetime import date
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
@@ -75,3 +78,67 @@ class AdminUserListResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class AdminDashboardSaleItem(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    id: uuid.UUID
+    invoice_no: str
+    sale_date: date
+    buyer: str
+    item: str
+    quantity: Decimal
+    qty_unit: str
+    amount_inr: Decimal
+    received_inr: Decimal
+    balance_inr: Decimal
+
+
+class AdminDashboardFarmCard(BaseModel):
+    """One farm with owner identity, rollups, and nested sales."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    unit_id: uuid.UUID
+    unit_name: str
+    farm_type: str
+    state: str | None = None
+    district: str | None = None
+    owner_user_id: uuid.UUID
+    owner_email: str
+    income_inr: Decimal
+    expenses_inr: Decimal
+    profit_inr: Decimal
+    to_receive_inr: Decimal
+    to_pay_inr: Decimal
+    units_sold: Decimal
+    sale_count: int
+    expense_count: int
+    sales: list[AdminDashboardSaleItem]
+
+
+class AdminDashboardTotals(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    farm_count: int
+    owner_count: int
+    sale_count: int
+    expense_count: int
+    income_inr: Decimal
+    expenses_inr: Decimal
+    profit_inr: Decimal
+    to_receive_inr: Decimal
+    to_pay_inr: Decimal
+    units_sold: Decimal
+
+
+class AdminDashboardResponse(BaseModel):
+    """Platform-wide Mitra dashboard for admin/super_admin."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    from_date: date | None
+    to_date: date | None
+    totals: AdminDashboardTotals
+    farms: list[AdminDashboardFarmCard]

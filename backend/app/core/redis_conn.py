@@ -22,9 +22,12 @@ def get_redis() -> Redis:
 
     from redis.asyncio import Redis
 
+    # protocol=2 (RESP2): Windows Redis 3.x rejects HELLO (RESP3). Redis 7 in Docker
+    # still accepts RESP2, so this is safe for local + compose.
     return Redis.from_url(
         settings.redis_url,
         decode_responses=True,
+        protocol=2,
         socket_connect_timeout=2,
         socket_timeout=2,
     )

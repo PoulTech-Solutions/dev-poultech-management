@@ -176,6 +176,19 @@ class AuthService:
     ) -> None:
         from app.tasks.email import send_otp_email
 
+        # Local console mode: print OTP in the API process (no Celery worker needed).
+        if self._s.email_backend == 'console':
+            await asyncio.to_thread(
+                send_otp_email.run,
+                to=to,
+                subject=subject,
+                purpose=purpose,
+                session_id=session_id,
+                body=sealed,
+                display_name=name,
+            )
+            return
+
         def _publish() -> None:
             send_otp_email.delay(
                 to=to,
@@ -256,7 +269,11 @@ class AuthService:
             return
         from app.core.store import otp_key
 
-        await get_redis().hset(otp_key(purpose, sid), mapping=mapping)  # type: ignore[arg-type]
+        # Redis 3.x (Windows) only accepts one field per HSET; mapping= needs Redis 4+.
+        r = get_redis()
+        key = otp_key(purpose, sid)
+        for field, value in mapping.items():
+            await r.hset(key, field, value)
 
     async def _challenge_state(self, *, sid: str, purpose: OtpPurpose) -> dict[str, str]:
         state = await get_otp_state(purpose=purpose, session_id=sid)

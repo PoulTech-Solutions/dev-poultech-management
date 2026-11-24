@@ -45,21 +45,22 @@ async def test_billing_expense_profit_export(client: AsyncClient, seeded) -> Non
     assert sale.status_code == 201, sale.text
     assert Decimal(sale.json()['amount_inr']) == Decimal('15000.00')
 
-    dup = await client.post(
+    # Same invoice_no = another line item on the same bill (multi-item invoice).
+    line2 = await client.post(
         f'/api/v1/mitra/units/{unit_id}/billing',
         headers=bearer(tokens),
         json={
             'invoice_no': 'INV-001',
-            'sale_date': '2026-04-02',
-            'buyer': 'X',
+            'sale_date': '2026-04-01',
+            'buyer': 'Trader A',
             'item': 'Eggs',
             'quantity': '1',
             'qty_unit': 'tray',
             'rate_inr': '100',
         },
     )
-    assert dup.status_code == 409
-    assert dup.json()['error']['code'] == 'mitra_invoice_duplicate'
+    assert line2.status_code == 201, line2.text
+    assert Decimal(line2.json()['amount_inr']) == Decimal('100.00')
 
     exp = await client.post(
         f'/api/v1/mitra/units/{unit_id}/expenses',
@@ -97,3 +98,90 @@ async def test_billing_expense_profit_export(client: AsyncClient, seeded) -> Non
     tokens_b = await _login(client)
     blocked = await client.get(f'/api/v1/mitra/units/{unit_id}/billing', headers=bearer(tokens_b))
     assert blocked.status_code == 404
+
+
+async def test_owner_dashboard_all_farms_and_sales(client: AsyncClient, seeded) -> None:
+    tokens = await _login(client)
+    headers = bearer(tokens)
+
+    unit_a = await client.post('/api/v1/mitra/units', headers=headers, json=_UNIT)
+    assert unit_a.status_code == 201
+    id_a = unit_a.json()['id']
+
+    unit_b = await client.post(
+        '/api/v1/mitra/units',
+        headers=headers,
+        json={**_UNIT, 'name': 'Layer House', 'farm_type': 'layer', 'contact_phone': '9876504322'},
+    )
+    assert unit_b.status_code == 201
+    id_b = unit_b.json()['id']
+
+    sale_a = await client.post(
+        f'/api/v1/mitra/units/{id_a}/billing',
+        headers=headers,
+        json={
+            'invoice_no': 'DASH-1',
+            'sale_date': '2026-05-01',
+            'buyer': 'Buyer A',
+            'item': 'Broiler',
+            'quantity': '10',
+            'qty_unit': 'birds',
+            'rate_inr': '100',
+            'received_inr': '500',
+        },
+    )
+    assert sale_a.status_code == 201, sale_a.text
+
+    sale_b = await client.post(
+        f'/api/v1/mitra/units/{id_b}/billing',
+        headers=headers,
+        json={
+            'invoice_no': 'DASH-2',
+            'sale_date': '2026-05-02',
+            'buyer': 'Buyer B',
+            'item': 'Eggs',
+            'quantity': '5',
+            'qty_unit': 'tray',
+            'rate_inr': '200',
+        },
+    )
+    assert sale_b.status_code == 201, sale_b.text
+
+    exp = await client.post(
+        f'/api/v1/mitra/units/{id_a}/expenses',
+        headers=headers,
+        json={
+            'expense_date': '2026-05-01',
+            'supplier': 'Feed Co',
+            'category': 'feed',
+            'description': 'Bag',
+            'amount_inr': '300',
+            'paid_inr': '100',
+        },
+    )
+    assert exp.status_code == 201, exp.text
+
+    dash = await client.get('/api/v1/mitra/dashboard', headers=headers)
+    assert dash.status_code == 200, dash.text
+    body = dash.json()
+    assert body['totals']['farm_count'] == 2
+    assert body['totals']['sale_count'] == 2
+    assert body['totals']['expense_count'] == 1
+    assert Decimal(body['totals']['income_inr']) == Decimal('2000.00')
+    assert Decimal(body['totals']['expenses_inr']) == Decimal('300')
+    assert Decimal(body['totals']['profit_inr']) == Decimal('1700.00')
+    # DASH-1: 1000 - 500 received; DASH-2: full amount received by default
+    assert Decimal(body['totals']['to_receive_inr']) == Decimal('500.00')
+    assert Decimal(body['totals']['to_pay_inr']) == Decimal('200')
+    assert len(body['farms']) == 2
+    assert len(body['recent_sales']) == 2
+    assert {s['invoice_no'] for s in body['recent_sales']} == {'DASH-1', 'DASH-2'}
+
+    filtered = await client.get(
+        '/api/v1/mitra/dashboard',
+        headers=headers,
+        params={'from_date': '2026-05-02', 'to_date': '2026-05-02'},
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()['totals']['sale_count'] == 1
+    assert Decimal(filtered.json()['totals']['income_inr']) == Decimal('1000.00')

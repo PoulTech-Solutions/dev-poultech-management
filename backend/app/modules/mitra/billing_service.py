@@ -20,6 +20,10 @@ from app.modules.mitra.billing_schemas import (
     ExpenseListResponse,
     ExpenseResponse,
     ExpenseUpdateRequest,
+    MitraDashboardFarmCard,
+    MitraDashboardRecentSale,
+    MitraDashboardResponse,
+    MitraDashboardTotals,
     ProfitSummaryResponse,
 )
 from app.modules.mitra.export import build_csv_export, build_json_export
@@ -57,11 +61,7 @@ class MitraBillingMixin:
         self, owner_user_id: uuid.UUID, unit_id: uuid.UUID, payload: BillingSaleCreateRequest
     ) -> BillingSaleResponse:
         unit = await self._require_unit(owner_user_id, unit_id)
-        if await self._repo.get_billing_by_invoice(unit.id, payload.invoice_no):
-            raise ConflictError(
-                'Invoice number already exists on this unit',
-                code='mitra_invoice_duplicate',
-            )
+        # Multiple rows may share invoice_no (one row per line item on the same bill).
         settings = await self._repo.get_billing_settings(unit.id)
         gst_fields = await self._apply_gst_to_new_sale(owner_user_id, payload, settings)
         row = MitraBillingSale(
@@ -102,13 +102,6 @@ class MitraBillingMixin:
         if row is None:
             raise NotFoundError('Billing entry not found', code='mitra_billing_not_found')
         data = payload.model_dump(exclude_unset=True)
-        if 'invoice_no' in data and data['invoice_no'] != row.invoice_no:
-            clash = await self._repo.get_billing_by_invoice(unit.id, data['invoice_no'])
-            if clash is not None:
-                raise ConflictError(
-                'Invoice number already exists on this unit',
-                code='mitra_invoice_duplicate',
-            )
         for key, value in data.items():
             setattr(row, key, value)
         settings = await self._repo.get_billing_settings(unit.id)
@@ -272,6 +265,61 @@ class MitraBillingMixin:
             profit_per_unit_inr=per_unit,
             to_receive_inr=totals['to_receive_inr'],
             to_pay_inr=totals['to_pay_inr'],
+        )
+
+    async def owner_dashboard(
+        self,
+        owner_user_id: uuid.UUID,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        recent_limit: int = 20,
+    ) -> MitraDashboardResponse:
+        """All farms + sales rollups for the Mitra home dashboard (one round trip)."""
+        self._validate_date_range(from_date, to_date)
+        farm_rows = await self._repo.owner_dashboard_by_unit(
+            owner_user_id, from_date=from_date, to_date=to_date
+        )
+        farms = [MitraDashboardFarmCard(**row) for row in farm_rows]
+        income = sum((f.income_inr for f in farms), Decimal('0'))
+        expenses = sum((f.expenses_inr for f in farms), Decimal('0'))
+        recent_rows = await self._repo.owner_recent_sales(
+            owner_user_id, from_date=from_date, to_date=to_date, limit=recent_limit
+        )
+        recent_sales = [
+            MitraDashboardRecentSale(
+                id=sale.id,
+                unit_id=unit.id,
+                unit_name=unit.name,
+                farm_type=unit.farm_type,
+                invoice_no=sale.invoice_no,
+                sale_date=sale.sale_date,
+                buyer=sale.buyer,
+                item=sale.item,
+                quantity=sale.quantity,
+                qty_unit=sale.qty_unit,
+                amount_inr=sale.amount_inr,
+                received_inr=sale.received_inr,
+                balance_inr=sale.balance_inr,
+            )
+            for sale, unit in recent_rows
+        ]
+        return MitraDashboardResponse(
+            from_date=from_date,
+            to_date=to_date,
+            totals=MitraDashboardTotals(
+                farm_count=len(farms),
+                sale_count=sum(f.sale_count for f in farms),
+                expense_count=sum(f.expense_count for f in farms),
+                income_inr=income,
+                expenses_inr=expenses,
+                profit_inr=income - expenses,
+                to_receive_inr=sum((f.to_receive_inr for f in farms), Decimal('0')),
+                to_pay_inr=sum((f.to_pay_inr for f in farms), Decimal('0')),
+                units_sold=sum((f.units_sold for f in farms), Decimal('0')),
+            ),
+            farms=farms,
+            recent_sales=recent_sales,
         )
 
     async def export_unit(

@@ -190,6 +190,7 @@ async def upsert_poultry_rates(
         tomorrow=payload.tomorrow,
         updated_by=user.user_id,
         actor_role=user.role,
+        apply_all_zones=payload.apply_all_zones,
     )
 
 

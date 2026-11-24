@@ -19,6 +19,7 @@ from app.modules.mitra.billing_schemas import (
     ExpenseListResponse,
     ExpenseResponse,
     ExpenseUpdateRequest,
+    MitraDashboardResponse,
     ProfitSummaryResponse,
 )
 from app.modules.mitra.gst_schemas import (
@@ -58,6 +59,20 @@ MitraS = Annotated[MitraService, Depends(get_mitra_service)]
 MitraReadLimit = [Depends(limit('mitra:read'))]
 MitraWriteLimit = [Depends(limit('mitra:write'))]
 MitraExportLimit = [Depends(limit('mitra:export'))]
+
+
+@router.get('/dashboard', dependencies=MitraReadLimit)
+async def mitra_dashboard(
+    user: MitraReader,
+    mitra: MitraS,
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
+    recent_limit: int = Query(default=20, ge=1, le=100),
+) -> MitraDashboardResponse:
+    """Owner dashboard: all farms, sales/expense totals, and recent sales feed."""
+    return await mitra.owner_dashboard(
+        user.user_id, from_date=from_date, to_date=to_date, recent_limit=recent_limit
+    )
 
 
 @router.get('/units', dependencies=MitraReadLimit)

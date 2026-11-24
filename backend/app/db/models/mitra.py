@@ -130,7 +130,8 @@ class MitraBillingSale(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     total_tax_inr: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, server_default='0')
 
     __table_args__ = (
-        UniqueConstraint('unit_id', 'invoice_no', name='uq_mitra_billing_invoice'),
+        # Same invoice_no may appear on multiple rows (one row = one line item).
+        Index('ix_mitra_billing_sales_unit_invoice', 'unit_id', 'invoice_no'),
         CheckConstraint(
             "invoice_kind IN ('tax_invoice','bill_of_supply','receipt')",
             name='ck_mitra_billing_invoice_kind',

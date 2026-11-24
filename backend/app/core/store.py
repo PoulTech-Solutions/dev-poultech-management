@@ -62,7 +62,9 @@ end
 if tonumber(ARGV[3]) > 0 and tonumber(redis.call('GET', KEYS[2]) or '0') >= tonumber(ARGV[3]) then
   return -1
 end
-redis.call('HSET', KEYS[1], 'h', ARGV[2], 'a', '0')
+-- HSET one field at a time: Redis 3.x (Windows) rejects multi-field HSET.
+redis.call('HSET', KEYS[1], 'h', ARGV[2])
+redis.call('HSET', KEYS[1], 'a', '0')
 redis.call('EXPIRE', KEYS[1], ttl)
 redis.call('INCR', KEYS[2])
 redis.call('EXPIRE', KEYS[2], hour)
@@ -87,7 +89,9 @@ end
 if redis.call('EXISTS', KEYS[1]) == 0 then
   return -2
 end
-redis.call('HSET', KEYS[1], 'h', ARGV[2], 'a', '0')
+-- HSET one field at a time: Redis 3.x (Windows) rejects multi-field HSET.
+redis.call('HSET', KEYS[1], 'h', ARGV[2])
+redis.call('HSET', KEYS[1], 'a', '0')
 redis.call('EXPIRE', KEYS[1], ttl)
 redis.call('INCR', KEYS[2])
 redis.call('EXPIRE', KEYS[2], hour)

@@ -136,8 +136,11 @@ class SignupRequest(_StrictModel, _PasswordMixin):
         return self
 
 
-class LoginRequest(_StrictModel, _PasswordMixin):
+class LoginRequest(_StrictModel):
+    """Login accepts any password string — policy applies only at signup/reset."""
+
     email: EmailStr
+    password: PasswordType
     remember_me: bool = False
     # Set by the client only after showing "already signed in on another device".
     confirm_device_switch: bool = False

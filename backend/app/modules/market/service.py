@@ -19,7 +19,7 @@ from app.core.redis_conn import get_redis
 from app.db.models.users import User
 from app.modules.market.calendar_util import list_recent_months, week_day_span, week_of_month
 from app.modules.market.necc_client import fetch_necc_sheet_html, parse_necc_html
-from app.modules.market.pricing_util import latest_day_on_sheet, neighbor_on_sheet, spot_from_sheet
+from app.modules.market.pricing_util import neighbor_on_sheet, spot_from_sheet
 from app.modules.market.products import MANUAL_PRODUCTS, POULTRY_PRODUCTS
 from app.modules.market.repository import MarketRepository
 from app.modules.market.schemas import (
@@ -535,15 +535,13 @@ class MarketService:
         tomorrow: Decimal | None,
         updated_by: uuid.UUID,
         actor_role: str,
+        apply_all_zones: bool = False,
     ) -> ManualPoultryRateUpsertResponse:
         known = set(await self._repo.list_zone_names())
         if not known:
             raise MarketDataUnavailableError('No NECC zones in database')
         zone_name = validate_zone_or_raise(zone_name.strip(), known)
-        zone = await self._repo.get_zone_by_name(zone_name)
-        assert zone is not None
         today_d = _today_ist()
-        await self._repo.lock_poultry_channel(zone.id, product)
         writes: list[tuple[date, Decimal]] = []
         if today is not None:
             writes.append((today_d, today))
@@ -551,22 +549,28 @@ class MarketService:
             writes.append((today_d - timedelta(days=1), yesterday))
         if tomorrow is not None:
             writes.append((today_d + timedelta(days=1), tomorrow))
-        for rate_date, price in writes:
-            await self._assert_poultry_writable(
-                zone_id=zone.id,
-                product=product,
-                rate_date=rate_date,
-                today_d=today_d,
-                actor_role=actor_role,
-            )
-            await self._repo.upsert_poultry_daily(
-                zone_id=zone.id,
-                product=product,
-                rate_date=rate_date,
-                price=price,
-                source='manual',
-                updated_by=updated_by,
-            )
+
+        target_names = sorted(known) if apply_all_zones else [zone_name]
+        for name in target_names:
+            zone = await self._repo.get_zone_by_name(name)
+            assert zone is not None
+            await self._repo.lock_poultry_channel(zone.id, product)
+            for rate_date, price in writes:
+                await self._assert_poultry_writable(
+                    zone_id=zone.id,
+                    product=product,
+                    rate_date=rate_date,
+                    today_d=today_d,
+                    actor_role=actor_role,
+                )
+                await self._repo.upsert_poultry_daily(
+                    zone_id=zone.id,
+                    product=product,
+                    rate_date=rate_date,
+                    price=price,
+                    source='manual',
+                    updated_by=updated_by,
+                )
         try:
             await self._db.commit()
         except IntegrityError:
@@ -593,6 +597,8 @@ class MarketService:
             today_editable=read.today_editable,
             yesterday_editable=read.yesterday_editable,
             tomorrow_editable=read.tomorrow_editable,
+            zones_updated=len(target_names),
+            apply_all_zones=apply_all_zones,
         )
 
     async def _assert_poultry_writable(
@@ -696,18 +702,19 @@ class MarketService:
                 details=[{'field': 'zone', 'message': selected}],
             )
 
-        today_p = month_map.get(today.day)
-        is_live_today = today_p is not None
-        latest = latest_day_on_sheet(month_map, through_day=today.day)
-        if today_p is None and latest is None:
+        # Use latest published NECC day when today's column is still blank (avoids empty cards).
+        try:
+            sheet_day, spot_p, is_live_today = spot_from_sheet(month_map, today.day)
+        except ValueError as exc:
             raise MarketDataUnavailableError(
                 'No egg prices on the current NECC sheet for this zone'
-            )
-        price_as_of = date(today.year, today.month, today.day if is_live_today else latest).isoformat()
-        prev_p = month_map.get(today.day - 1)
-        if prev_p is None and today.day == 1:
+            ) from exc
+        price_as_of = date(today.year, today.month, sheet_day).isoformat()
+        prev_p = neighbor_on_sheet(month_map, sheet_day, -1)
+        if prev_p is None and sheet_day == 1:
             prev_p = await self._repo.price_on_date(zone.id, today - timedelta(days=1))
-        next_p = month_map.get(today.day + 1)
+        next_p = neighbor_on_sheet(month_map, sheet_day, 1)
+        today_p = spot_p
 
         month_series = [float(month_map[d]) for d in sorted(month_map)]
         year_rows = await self._repo.monthly_averages(zone.id, months=12)
@@ -720,9 +727,7 @@ class MarketService:
             if p is not None:
                 history.append(float(p))
 
-        change = (
-            float(today_p - prev_p) if today_p is not None and prev_p is not None else 0.0
-        )
+        change = float(today_p - prev_p) if prev_p is not None else 0.0
         sync = await self._repo.latest_successful_sync()
         fetched_at = sync.finished_at.isoformat() if sync and sync.finished_at else None
         summary = await self._repo.month_summary(zone.id, today.year, today.month)
