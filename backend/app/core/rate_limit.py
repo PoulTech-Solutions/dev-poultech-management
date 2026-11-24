@@ -31,6 +31,9 @@ LIMITS: dict[str, tuple[int, int]] = {
     'geo:read': (90, 60),
     'admin:read': (60, 60),
     'admin:write': (30, 60),
+    'mitra:read': (120, 60),
+    'mitra:write': (60, 60),
+    'mitra:export': (20, 3600),
 }
 
 

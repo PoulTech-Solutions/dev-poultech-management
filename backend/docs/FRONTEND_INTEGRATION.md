@@ -29,6 +29,8 @@ Restart the `api` container after changing.
 
 See `frontend/docs/BACKEND_API_MAPPING.md` for full field-level mapping.
 
+**Farm Mitra:** [`docs/api/MITRA_FARM_INTEGRATION.md`](../../../docs/api/MITRA_FARM_INTEGRATION.md) (units, daily/hatchery, billing, optional GST).
+
 ## Run stack
 
 ```powershell

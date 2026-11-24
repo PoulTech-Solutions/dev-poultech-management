@@ -7,6 +7,15 @@ from app.db.models.market import (
     MarketPoultryDaily,
     MarketSyncRun,
 )
+from app.db.models.mitra import (
+    MitraBillingSale,
+    MitraDailyRecord,
+    MitraExpense,
+    MitraFarmUnit,
+    MitraGstRateSlab,
+    MitraHatcheryBatch,
+    MitraUnitBillingSettings,
+)
 from app.db.models.oauth import OAuthAccount
 from app.db.models.profile import UserProfile
 from app.db.models.roles import Permission, Role, role_permissions
@@ -22,6 +31,13 @@ __all__ = [
     'MarketEggZone',
     'MarketPoultryDaily',
     'MarketSyncRun',
+    'MitraBillingSale',
+    'MitraDailyRecord',
+    'MitraExpense',
+    'MitraFarmUnit',
+    'MitraGstRateSlab',
+    'MitraHatcheryBatch',
+    'MitraUnitBillingSettings',
     'OAuthAccount',
     'Permission',
     'Role',

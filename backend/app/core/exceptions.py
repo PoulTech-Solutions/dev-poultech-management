@@ -84,6 +84,12 @@ _CONSTRAINT_MESSAGES = {
     'uq_user_sessions_refresh_token_hash': ('session', 'Session conflict, sign in again'),
     'ck_users_active_not_deleted': ('account', 'Reactivate your account to continue'),
     'uq_market_poultry_daily': ('rate', 'A rate for this city, product, and day already exists'),
+    'uq_mitra_daily_unit_date': ('record_date', 'A record for this date already exists on this unit'),
+    'uq_mitra_hatchery_batch_code': ('batch_code', 'This batch code is already used on this hatchery unit'),
+    'uq_mitra_billing_invoice': ('invoice_no', 'This invoice number is already used on this unit'),
+    'uq_mitra_expense_bill': ('bill_no', 'This bill number is already used on this unit'),
+    'uq_mitra_gst_slab_owner_hsn': ('hsn_sac', 'This HSN/SAC is already in your rate list'),
+    'uq_mitra_unit_billing_settings_unit_id': ('unit_id', 'Billing settings already exist for this unit'),
 }
 
 

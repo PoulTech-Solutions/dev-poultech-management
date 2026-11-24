@@ -21,6 +21,13 @@ EXPECTED_TABLES = {
     'market_sync_runs',
     'geo_pincodes',
     'geo_offices',
+    'mitra_billing_sales',
+    'mitra_gst_rate_slabs',
+    'mitra_unit_billing_settings',
+    'mitra_expenses',
+    'mitra_farm_units',
+    'mitra_daily_records',
+    'mitra_hatchery_batches',
 }
 
 

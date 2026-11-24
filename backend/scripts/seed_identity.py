@@ -61,8 +61,9 @@ PERMISSIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     'services:read': ('Own service requests', ('farm_owner', 'farm_member', 'staff', 'admin', 'super_admin')),
     'services:write': ('Book a service', ('farm_owner',)),
     'services:fulfil': ('Work queue: assign, update, upload reports', ('staff', 'admin', 'super_admin')),
-    'mitra:read': ('Farm records', ('farm_owner', 'admin', 'super_admin')),
-    'mitra:write': ('Daily records, stock, billing', ('farm_owner',)),
+    # Phase 1 (pre-billing): `user` may use Mitra until subscription gates land in profile.
+    'mitra:read': ('Farm records', ('user', 'farm_owner', 'admin', 'super_admin')),
+    'mitra:write': ('Daily records, stock, billing', ('user', 'farm_owner')),
     'user:read:self': ('Read own profile', tuple(ROLES)),
     'user:write:self': ('Update own profile', tuple(ROLES)),
     'user:delete:self': ('Deactivate own account', ('farm_owner', 'user', 'admin', 'super_admin')),
